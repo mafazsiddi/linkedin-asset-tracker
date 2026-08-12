@@ -1,0 +1,15 @@
+{
+  "name": "linkedin-asset-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "LinkedIn creative asset tracker with a daily LinkedIn Ads sync (mocked until the Marketing Developer Platform app is approved).",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "dev": "node dev-server.js"
+  },
+  "dependencies": {
+    "pg": "^8.11.5"
+  }
+}
