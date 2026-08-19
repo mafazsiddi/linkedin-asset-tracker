@@ -337,16 +337,17 @@
       + metricList(a).map(function(x){ return '<span class="chip"><b>'+x[1]+'</b> '+x[0]+'</span>'; }).join('') + '</div>';
   }
 
-  function assetRowHtml(a){
+  function assetRowHtml(a, sameNameCount){
     var overdue=isOverdue(a);
     var col=STATUS_COLOR[a.status]||STATUS_COLOR["Requested"];
+    var sharedName = sameNameCount>1;
     return '<div class="card asset-card fadein" data-id="'+a.id+'" style="padding:13px 15px; margin-bottom:9px; cursor:pointer; border-color:'+(overdue?'rgba(255,92,97,.55)':'var(--line)')+';">'
       + '<div style="display:flex; gap:12px; align-items:flex-start;">'
       + typeTile(a.type)
       + '<div style="flex:1; min-width:0;">'
       + '<div style="display:flex; justify-content:space-between; gap:10px; align-items:flex-start; flex-wrap:wrap;">'
-      + '<div style="min-width:180px; flex:1;"><div style="font-size:13.5px; font-weight:600; line-height:1.25;">'+esc(a.title)+'</div>'
-      + '<div style="font-size:11.5px; color:var(--muted); margin-top:4px;">'+esc(a.campaign||'—')+'</div></div>'
+      + '<div style="min-width:180px; flex:1;"><div style="font-size:13.5px; font-weight:600; line-height:1.25;">'+esc(a.title)+(sharedName?' <span class="chip" style="background:var(--violet-tint); color:#C9BFFF; vertical-align:middle;" title="This ad name is reused on '+sameNameCount+' separate campaigns/creatives in LinkedIn — these are distinct ads, not duplicates.">'+icon('stack',11,'currentColor',1.8)+sameNameCount+'× this name</span>':'')+'</div>'
+      + '<span class="chip" style="margin-top:6px; background:var(--indigo-tint); color:#AAB2FF;">'+icon('target',12,'currentColor',1.8)+esc(a.campaign||'—')+'</span></div>'
       + '<div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">'
       + '<span class="badge" style="background:'+col.bg+'; color:'+col.fg+';">'+a.status+'</span>'
       + (overdue?'<span class="badge" style="background:var(--danger-tint); color:var(--danger);">'+icon('clock',12,'currentColor',2)+' Overdue</span>':'')
@@ -389,9 +390,11 @@
   }
 
   function assetsPanelHtml(c, filtered, list){
+    var titleCounts = {};
+    list.forEach(function(x){ var k=(x.title||'').trim().toLowerCase(); titleCounts[k]=(titleCounts[k]||0)+1; });
     return '<div style="background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:13px 15px;">'
       + (c.link?'<div style="font-size:11.5px; color:var(--muted); margin-bottom:11px;" class="meta">'+icon('folder',13,'var(--faint)',1.8)+'<a href="'+esc(c.link)+'" target="_blank" rel="noopener">Shared folder</a> · via '+esc(c.channel||'—')+'</div>':'')
-      + (filtered.length ? filtered.map(assetRowHtml).join('')
+      + (filtered.length ? filtered.map(function(a){ return assetRowHtml(a, titleCounts[(a.title||'').trim().toLowerCase()]); }).join('')
           : '<div style="text-align:center; padding:22px 8px; color:var(--faint);"><div class="icobox" style="justify-content:center;">'+icon(list.length?'search':'inbox',26,'var(--faint)',1.6)+'</div><div style="font-size:12.5px; margin-top:8px;">'+(list.length?'No assets match the current filter.':'No assets yet. Hit “+ Asset” to log the first one.')+'</div></div>')
       + '</div>';
   }
