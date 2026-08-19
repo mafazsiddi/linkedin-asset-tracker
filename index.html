@@ -1,6 +1,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.css">
+<script src="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js"></script>
 <style>html,body{margin:0;background:#0B0E14;}</style>
 
 <div id="app-shell" style="background:#0B0E14; min-height:100vh; padding:1px 0;">
@@ -61,6 +63,15 @@
   #app-root .perf-tile .v { font-family:'Bricolage Grotesque','Inter',sans-serif; font-weight:700; font-size:16px; margin-top:2px; }
   #app-root .perf-tile .l { font-size:10.5px; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
   #app-root a { color:var(--indigo); }
+
+  #app-root .tab-thumb-swiper { margin-bottom:10px; }
+  #app-root .tab-thumb-swiper, #app-root .tab-thumb-swiper .swiper-wrapper { height:auto; }
+  #app-root .tab-thumb-swiper .swiper-slide { width:auto; height:auto; }
+  #app-root .tab-pill { font-family:inherit; display:inline-flex; align-items:center; gap:6px; font-size:12.5px; font-weight:600; padding:8px 14px; border-radius:10px; border:1px solid var(--line); background:#161B27; color:var(--muted); cursor:pointer; white-space:nowrap; transition:background .12s, color .12s, border-color .12s; }
+  #app-root .tab-pill-count { font-size:10.5px; font-weight:700; color:var(--faint); background:#0E121B; padding:1px 6px; border-radius:999px; }
+  #app-root .swiper-slide-thumb-active .tab-pill { background:var(--indigo); border-color:var(--indigo); color:#fff; }
+  #app-root .swiper-slide-thumb-active .tab-pill-count { background:rgba(255,255,255,.22); color:#fff; }
+  #app-root .tab-main-swiper .swiper-slide { height:auto; max-height:520px; overflow-y:auto; }
 
   @keyframes appfade { from { opacity:0; transform:translateY(6px);} to { opacity:1; transform:none; } }
   #app-root .fadein { animation:appfade .35s ease both; }
@@ -163,6 +174,7 @@
   var METRIC_FIELDS = ["spend","impressions","clicks","reach","leads"];
 
   var assets = [], countries = [], campaigns = [], notifications = [], expanded = {}, currentTab = "countries";
+  var activeAssetTab = {}, tabMainSwipers = {}, tabThumbSwipers = {};
 
   function esc(s){ return (s||"").toString().replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
   function flagFor(n){ return FLAGS[n] || "🌐"; }
@@ -368,13 +380,34 @@
         + '<button class="btn btn-sm edit-campaign-btn" data-campaign="'+cam.id+'">Edit</button>'
         + '</div>';
     }).join('');
-    return '<div style="background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:13px 15px; margin-bottom:13px;">'
-      + '<div class="section-title" style="margin:0 0 8px; display:flex; justify-content:space-between; align-items:center;">'
-      + '<span>'+icon('target',14,'var(--muted)',1.8)+' LinkedIn campaigns</span>'
+    return '<div style="background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:13px 15px;">'
+      + '<div style="display:flex; justify-content:flex-end; margin-bottom:'+(rows?'8px':'0')+';">'
       + '<button class="btn btn-sm add-campaign-btn" data-market="'+c.id+'">+ Campaign</button>'
       + '</div>'
       + (rows || '<div style="font-size:12px; color:var(--faint);">No campaigns yet for this market.</div>')
       + '</div>';
+  }
+
+  function assetsPanelHtml(c, filtered, list){
+    return '<div style="background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:13px 15px;">'
+      + (c.link?'<div style="font-size:11.5px; color:var(--muted); margin-bottom:11px;" class="meta">'+icon('folder',13,'var(--faint)',1.8)+'<a href="'+esc(c.link)+'" target="_blank" rel="noopener">Shared folder</a> · via '+esc(c.channel||'—')+'</div>':'')
+      + (filtered.length ? filtered.map(assetRowHtml).join('')
+          : '<div style="text-align:center; padding:22px 8px; color:var(--faint);"><div class="icobox" style="justify-content:center;">'+icon(list.length?'search':'inbox',26,'var(--faint)',1.6)+'</div><div style="font-size:12.5px; margin-top:8px;">'+(list.length?'No assets match the current filter.':'No assets yet. Hit “+ Asset” to log the first one.')+'</div></div>')
+      + '</div>';
+  }
+
+  function tabsHtml(c, list, filtered){
+    var campaignCount = campaignsForMarket(c.id).length;
+    return '<div class="swiper tab-thumb-swiper" data-id="'+c.id+'">'
+      + '<div class="swiper-wrapper">'
+      + '<div class="swiper-slide"><button type="button" class="tab-pill">'+icon('target',13,'currentColor',1.8)+'Campaigns <span class="tab-pill-count">'+campaignCount+'</span></button></div>'
+      + '<div class="swiper-slide"><button type="button" class="tab-pill">'+icon('stack',13,'currentColor',1.8)+'Assets <span class="tab-pill-count">'+list.length+'</span></button></div>'
+      + '</div></div>'
+      + '<div class="swiper tab-main-swiper" data-id="'+c.id+'">'
+      + '<div class="swiper-wrapper">'
+      + '<div class="swiper-slide">'+campaignsPanelHtml(c)+'</div>'
+      + '<div class="swiper-slide">'+assetsPanelHtml(c, filtered, list)+'</div>'
+      + '</div></div>';
   }
 
   function countryBlockHtml(c){
@@ -406,10 +439,7 @@
       + '</div>'
       + '<div style="padding:'+(isOpen?'15px 17px':'0')+'; display:'+(isOpen?'block':'none')+';">'
       + perfPanel(list)
-      + campaignsPanelHtml(c)
-      + (c.link?'<div style="font-size:11.5px; color:var(--muted); margin-bottom:11px;" class="meta">'+icon('folder',13,'var(--faint)',1.8)+'<a href="'+esc(c.link)+'" target="_blank" rel="noopener">Shared folder</a> · via '+esc(c.channel||'—')+'</div>':'')
-      + (filtered.length ? filtered.map(assetRowHtml).join('')
-          : '<div style="text-align:center; padding:22px 8px; color:var(--faint);"><div class="icobox" style="justify-content:center;">'+icon(list.length?'search':'inbox',26,'var(--faint)',1.6)+'</div><div style="font-size:12.5px; margin-top:8px;">'+(list.length?'No assets match the current filter.':'No assets yet. Hit “+ Asset” to log the first one.')+'</div></div>')
+      + tabsHtml(c, list, filtered)
       + '</div></div>';
   }
 
@@ -422,6 +452,28 @@
     document.querySelectorAll('.log-metrics-btn').forEach(function(el){ el.addEventListener('click', function(e){ e.stopPropagation(); openMetricsModal(Number(el.getAttribute('data-campaign')), el.getAttribute('data-campaign-name')); }); });
     document.querySelectorAll('.edit-campaign-btn').forEach(function(el){ el.addEventListener('click', function(e){ e.stopPropagation(); openCampaignModal(Number(el.getAttribute('data-campaign'))); }); });
     document.querySelectorAll('.add-campaign-btn').forEach(function(el){ el.addEventListener('click', function(e){ e.stopPropagation(); openCampaignModal(null, Number(el.getAttribute('data-market'))); }); });
+    initCountryTabSwipers();
+  }
+
+  function initCountryTabSwipers(){
+    Object.keys(tabMainSwipers).forEach(function(id){ try{ tabMainSwipers[id].destroy(true,true); }catch(e){} });
+    Object.keys(tabThumbSwipers).forEach(function(id){ try{ tabThumbSwipers[id].destroy(true,true); }catch(e){} });
+    tabMainSwipers = {}; tabThumbSwipers = {};
+    if(typeof Swiper === 'undefined') return;
+    countries.forEach(function(c){
+      if(expanded[c.id] === false) return;
+      var thumbEl = document.querySelector('.tab-thumb-swiper[data-id="'+c.id+'"]');
+      var mainEl = document.querySelector('.tab-main-swiper[data-id="'+c.id+'"]');
+      if(!thumbEl || !mainEl) return;
+      var startSlide = activeAssetTab[c.id] || 0;
+      var thumbSwiper = new Swiper(thumbEl, { slidesPerView:'auto', spaceBetween:8, watchSlidesProgress:true, freeMode:true, initialSlide:startSlide });
+      var mainSwiper = new Swiper(mainEl, {
+        slidesPerView:1, autoHeight:true, allowTouchMove:true, initialSlide:startSlide,
+        thumbs:{ swiper:thumbSwiper },
+        on:{ slideChange:function(sw){ activeAssetTab[c.id]=sw.activeIndex; } }
+      });
+      tabThumbSwipers[c.id]=thumbSwiper; tabMainSwipers[c.id]=mainSwiper;
+    });
   }
 
   function renderTableView(){
