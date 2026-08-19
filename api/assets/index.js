@@ -1,20 +1,19 @@
 const { query } = require('../../lib/db');
 const { json, methodNotAllowed, currentMonthRange } = require('../../lib/util');
 
-// Metrics live on the campaign, not the asset (several assets can share one campaign, and
-// LinkedIn only reports at campaign granularity) — so every asset on a shared campaign shows
-// that campaign's current-month rollup here.
+// Each asset is one LinkedIn ad (creative), so its metrics come from asset_daily_metrics
+// (pivot=CREATIVE) — not the parent campaign's rollup, which several assets can share.
 const ASSET_SELECT = `
   select a.*,
          m.name as market_name,
          c.name as campaign_name,
          c.li_campaign_id as li_campaign_id,
-         coalesce(cm.spend, 0) as spend,
-         coalesce(cm.impressions, 0) as impressions,
-         coalesce(cm.clicks, 0) as clicks,
-         coalesce(cm.reach, 0) as reach,
-         coalesce(cm.leads, 0) as leads,
-         cm.source as metrics_source
+         coalesce(am.spend, 0) as spend,
+         coalesce(am.impressions, 0) as impressions,
+         coalesce(am.clicks, 0) as clicks,
+         coalesce(am.reach, 0) as reach,
+         coalesce(am.leads, 0) as leads,
+         am.source as metrics_source
   from assets a
   join markets m on m.id = a.market_id
   left join campaigns c on c.id = a.campaign_id
@@ -22,9 +21,9 @@ const ASSET_SELECT = `
     select sum(spend) as spend, sum(impressions) as impressions, sum(clicks) as clicks,
            sum(reach) as reach, sum(leads) as leads,
            (array_agg(source order by metric_date desc))[1] as source
-    from campaign_daily_metrics
-    where campaign_id = c.id and metric_date >= $1 and metric_date <= $2
-  ) cm on true
+    from asset_daily_metrics
+    where asset_id = a.id and metric_date >= $1 and metric_date <= $2
+  ) am on true
 `;
 
 module.exports = async function handler(req, res) {

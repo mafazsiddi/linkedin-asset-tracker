@@ -26,6 +26,7 @@ create table if not exists assets (
   type text not null default 'Image',
   market_id integer not null references markets(id) on delete cascade,
   campaign_id integer references campaigns(id) on delete set null,
+  li_creative_id text,
   requested_by text,
   assigned_to text,
   priority text default 'Medium',
@@ -55,6 +56,23 @@ create table if not exists campaign_daily_metrics (
   source text not null default 'manual' check (source in ('sync', 'manual')),
   updated_at timestamptz not null default now(),
   unique (campaign_id, metric_date)
+);
+
+-- One row per asset (LinkedIn creative/ad) per day — mirrors campaign_daily_metrics but at the
+-- individual-ad level, since LinkedIn's Analytics API also supports pivot=CREATIVE. Several assets
+-- can share a campaign, and each needs its own numbers rather than the whole campaign's rollup.
+create table if not exists asset_daily_metrics (
+  id serial primary key,
+  asset_id integer not null references assets(id) on delete cascade,
+  metric_date date not null,
+  spend numeric not null default 0,
+  impressions integer not null default 0,
+  clicks integer not null default 0,
+  reach integer not null default 0,
+  leads integer not null default 0,
+  source text not null default 'manual' check (source in ('sync', 'manual')),
+  updated_at timestamptz not null default now(),
+  unique (asset_id, metric_date)
 );
 
 create table if not exists notifications (

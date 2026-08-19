@@ -1,6 +1,6 @@
 const { query } = require('../../lib/db');
 const { json, todayISO } = require('../../lib/util');
-const { getCampaignDailyStats } = require('../../lib/linkedin');
+const { getCampaignDailyStats, getAssetDailyStatsBatch } = require('../../lib/linkedin');
 
 // Vercel invokes this daily per vercel.json's crons config. When CRON_SECRET is set (recommended
 // once deployed), Vercel automatically sends it as "Authorization: Bearer <CRON_SECRET>" on
@@ -15,7 +15,9 @@ module.exports = async function handler(req, res) {
 
   const date = todayISO();
   const { rows: campaigns } = await query('select * from campaigns where li_campaign_id is not null');
+  const { rows: assets } = await query('select id, li_creative_id from assets where li_creative_id is not null');
   let synced = 0;
+  let assetsSynced = 0;
 
   try {
     for (const campaign of campaigns) {
@@ -29,10 +31,25 @@ module.exports = async function handler(req, res) {
       );
       synced++;
     }
+
+    const assetStats = await getAssetDailyStatsBatch(assets, date);
+    for (const asset of assets) {
+      const stats = assetStats[asset.li_creative_id];
+      if (!stats) continue; // no LinkedIn data for this ad today (e.g. not serving)
+      await query(
+        `insert into asset_daily_metrics (asset_id, metric_date, spend, impressions, clicks, reach, leads, source)
+         values ($1,$2,$3,$4,$5,$6,$7,'sync')
+         on conflict (asset_id, metric_date)
+         do update set spend=$3, impressions=$4, clicks=$5, reach=$6, leads=$7, source='sync', updated_at=now()`,
+        [asset.id, date, stats.spend, stats.impressions, stats.clicks, stats.reach, stats.leads]
+      );
+      assetsSynced++;
+    }
+
     await query('insert into sync_log (status, campaigns_synced) values ($1,$2)', ['ok', synced]);
-    return json(res, 200, { synced, date, campaignsConsidered: campaigns.length });
+    return json(res, 200, { synced, assetsSynced, date, campaignsConsidered: campaigns.length, assetsConsidered: assets.length });
   } catch (e) {
     await query('insert into sync_log (status, campaigns_synced, error) values ($1,$2,$3)', ['error', synced, e.message]);
-    return json(res, 500, { error: e.message, synced });
+    return json(res, 500, { error: e.message, synced, assetsSynced });
   }
 };

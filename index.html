@@ -264,14 +264,12 @@
 
   function isOverdue(a){ if(a.dateDelivered) return false; if(["Delivered","Live on LinkedIn","Archived"].indexOf(a.status)!==-1) return false; if(!a.dueDate) return false; var t=new Date(); t.setHours(0,0,0,0); return new Date(a.dueDate)<t; }
   function derived(a){ var im=num(a.impressions),cl=num(a.clicks),sp=num(a.spend),le=num(a.leads); return { ctr:im>0?cl/im*100:0, cpc:cl>0?sp/cl:0, cpm:im>0?sp/im*1000:0, cpl:le>0?sp/le:0 }; }
-  // Several creative assets can share one LinkedIn campaign, and metrics only exist at campaign
-  // granularity — so totals are summed per unique campaign, not per asset, to avoid double-counting.
-  function totalsFor(list){
-    var seen={}; var t={spend:0,impressions:0,clicks:0,reach:0,leads:0};
-    list.forEach(function(a){
-      if(!a.campaignId || seen[a.campaignId]) return;
-      seen[a.campaignId]=true;
-      METRIC_FIELDS.forEach(function(f){ t[f]+=num(a[f]); });
+  // Market-level rollups use the campaign totals, not a sum of tracked assets — a campaign can run
+  // ads that haven't been logged as an asset yet, so summing only known assets would under-count.
+  function campaignTotalsFor(marketId){
+    var t={spend:0,impressions:0,clicks:0,reach:0,leads:0};
+    campaignsForMarket(marketId).forEach(function(cam){
+      METRIC_FIELDS.forEach(function(f){ t[f]+=num(cam[f]); });
     });
     return t;
   }
@@ -306,8 +304,8 @@
 
   function typeTile(type){ var c=TYPE_CFG[type]||{ic:"document",color:"var(--muted)",tint:"#1C2230"}; return '<div class="icobox type-tile" style="background:'+c.tint+'; color:'+c.color+';">'+icon(c.ic,19,'currentColor',1.8)+'</div>'; }
 
-  function perfPanel(list){
-    var t=totalsFor(list);
+  function perfPanel(list, marketId){
+    var t=campaignTotalsFor(marketId);
     var head='<div class="section-title" style="margin:0 0 10px;">'+icon('chart',14,'var(--muted)',1.8)+' Ad performance <span style="color:var(--faint); font-weight:600; text-transform:none; letter-spacing:0;">· current month · '+list.length+' assets</span></div>';
     var grid=metricList(t).map(function(x){ return '<div class="perf-tile"><div class="l">'+x[0]+'</div><div class="v">'+x[1]+'</div></div>'; }).join('');
     return '<div style="background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:13px 15px; margin-bottom:13px;">'+head
@@ -317,7 +315,7 @@
     var heads=['Country','Cost','Clicks','Impr','CPC','Reach','Leads'];
     var rows=countries.map(function(c){
       var list=assets.filter(function(a){return a.marketId===c.id;});
-      var t=totalsFor(list);
+      var t=campaignTotalsFor(c.id);
       var accent=accentFor(c.country);
       var cells=metricList(t).map(function(x){ return '<td style="padding:10px 12px; text-align:right;">'+x[1]+'</td>'; }).join('');
       return '<tr style="border-bottom:1px solid var(--line-soft);">'
@@ -426,7 +424,7 @@
     var isOpen=expanded[c.id]!==false;
     var live=list.filter(function(a){return a.status==="Live on LinkedIn";}).length;
     var overdue=list.filter(isOverdue).length;
-    var t=totalsFor(list);
+    var t=campaignTotalsFor(c.id);
     return '<div class="card fadein" style="margin-bottom:15px; overflow:hidden; border-left:5px solid '+accent+';">'
       + '<div class="country-header" data-id="'+c.id+'" style="padding:15px 17px; cursor:pointer; display:flex; align-items:center; gap:13px; flex-wrap:wrap; background:linear-gradient(90deg,'+accent+'22 0%, transparent 60%);">'
       + '<span class="flag icobox" style="width:40px; height:40px; border-radius:11px; background:#10141E; border:1px solid var(--line);">'+flagFor(c.country)+'</span>'
@@ -447,7 +445,7 @@
       + statusBar(list)
       + '</div>'
       + '<div style="padding:'+(isOpen?'15px 17px':'0')+'; display:'+(isOpen?'block':'none')+';">'
-      + perfPanel(list)
+      + perfPanel(list, c.id)
       + tabsHtml(c, list, filtered)
       + '</div></div>';
   }
