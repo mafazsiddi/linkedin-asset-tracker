@@ -50,6 +50,12 @@ vercel --prod
 until you flip `LINKEDIN_MODE`, generating deterministic fake numbers per campaign/day so the whole
 pipeline (sync → store → roll up → display) is exercised end-to-end before real credentials exist.
 
+For fresher-than-daily data on the free Vercel plan (which caps its own cron at once/day),
+`.github/workflows/hourly-sync.yml` calls the same endpoint hourly via GitHub Actions. It needs a
+repo secret: **Settings → Secrets and variables → Actions → New repository secret** named
+`CRON_SECRET`, set to the same value as the `CRON_SECRET` env var in Vercel. The Vercel cron stays
+as a once-daily fallback in case the Actions run is skipped or disabled.
+
 ## Adding real campaign IDs
 
 Add campaigns from the UI ("+ Campaign" under a market, or "+ Asset" auto-creates one from the
