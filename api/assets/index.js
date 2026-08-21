@@ -1,6 +1,16 @@
 const { query } = require('../../lib/db');
 const { json, methodNotAllowed, currentMonthRange } = require('../../lib/util');
 
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+// Lets the frontend's calendar date-range picker control the reporting period metrics are summed
+// over (like LinkedIn Campaign Manager's date picker) — falls back to current-month when unset.
+function reportingRange(req) {
+  const { start, end } = req.query;
+  if (ISO_DATE.test(start) && ISO_DATE.test(end) && start <= end) return { start, end };
+  return currentMonthRange();
+}
+
 // Each asset is one LinkedIn ad (creative), so its metrics come from asset_daily_metrics
 // (pivot=CREATIVE) — not the parent campaign's rollup, which several assets can share.
 const ASSET_SELECT = `
@@ -18,8 +28,12 @@ const ASSET_SELECT = `
   join markets m on m.id = a.market_id
   left join campaigns c on c.id = a.campaign_id
   left join lateral (
-    select sum(spend) as spend, sum(impressions) as impressions, sum(clicks) as clicks,
-           sum(reach) as reach, sum(leads) as leads,
+    -- LinkedIn's reporting API occasionally sends a negative delta on a given day (e.g. an
+    -- invalid-click/fraud correction) — clamp the summed total so the UI never shows a
+    -- nonsensical negative spend/click count, while still letting per-day corrections net out.
+    select greatest(sum(spend), 0) as spend, greatest(sum(impressions), 0) as impressions,
+           greatest(sum(clicks), 0) as clicks, greatest(sum(reach), 0) as reach,
+           greatest(sum(leads), 0) as leads,
            (array_agg(source order by metric_date desc))[1] as source
     from asset_daily_metrics
     where asset_id = a.id and metric_date >= $1 and metric_date <= $2
@@ -28,7 +42,7 @@ const ASSET_SELECT = `
 
 module.exports = async function handler(req, res) {
   if (req.method === 'GET') {
-    const { start, end } = currentMonthRange();
+    const { start, end } = reportingRange(req);
     const { rows } = await query(`${ASSET_SELECT} order by a.created_at desc`, [start, end]);
     return json(res, 200, rows);
   }

@@ -29,7 +29,7 @@
   #app-root .btn { font-family:inherit; font-size:13px; font-weight:600; padding:8px 14px; border-radius:10px; border:1px solid var(--line); background:#1A2030; cursor:pointer; color:var(--ink); transition:background .12s, border-color .12s, transform .06s; }
   #app-root .btn:hover { background:#232B3C; }
   #app-root .btn:active { transform:translateY(1px); }
-  #app-root .btn-sm { padding:5px 11px; font-size:12px; }
+  #app-root .btn-sm { padding:5px 11px; font-size:12px; display: flex; }
   #app-root .btn-primary { background:var(--indigo); border-color:var(--indigo); color:#fff; }
   #app-root .btn-primary:hover { background:var(--indigo-strong); }
   #app-root .btn-active { background:var(--indigo); color:#fff; border-color:var(--indigo); }
@@ -113,6 +113,7 @@
   <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:16px;">
     <input id="f-search" placeholder="Search title or campaign, all countries" style="flex:1; min-width:220px;" />
     <select id="f-status" style="width:auto; min-width:160px;"><option value="">All statuses</option></select>
+    <div id="date-filter" style="position:relative;"></div>
     <button class="btn btn-primary" id="add-country-btn">+ Add country</button>
   </div>
   <div id="country-blocks"></div>
@@ -181,6 +182,19 @@
 
   var assets = [], countries = [], campaigns = [], notifications = [], expanded = {}, currentTab = "countries";
   var activeAssetTab = {}, tabMainSwipers = {}, tabThumbSwipers = {};
+  var dateRange = { start:null, end:null };
+  var calendarOpen = false;
+  var calView = (function(){ var d=new Date(); return { y:d.getFullYear(), m:d.getMonth() }; })();
+
+  function pad2(n){ return String(n).length<2 ? "0"+n : String(n); }
+  function isoOf(y,m,d){ return y+"-"+pad2(m+1)+"-"+pad2(d); }
+  function reportingPeriodLabel(){ return (dateRange.start && dateRange.end) ? dateRangeLabel() : "current month"; }
+  function dateRangeLabel(){
+    if(!dateRange.start && !dateRange.end) return "All time";
+    if(dateRange.start && dateRange.end) return fmtDate(dateRange.start)+" – "+fmtDate(dateRange.end);
+    if(dateRange.start) return "From "+fmtDate(dateRange.start);
+    return "Until "+fmtDate(dateRange.end);
+  }
 
   function esc(s){ return (s||"").toString().replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
   function flagFor(n){ return FLAGS[n] || "🌐"; }
@@ -210,7 +224,7 @@
     return {
       id:c.id, name:c.name, marketId:c.market_id, marketName:c.market_name||'', liCampaignId:c.li_campaign_id||'',
       spend:num(c.spend), impressions:num(c.impressions), clicks:num(c.clicks), reach:num(c.reach), leads:num(c.leads),
-      metricsSource:c.metrics_source||''
+      metricsSource:c.metrics_source||'', createdAt:c.created_at
     };
   }
   function mapAssetFromApi(a){
@@ -221,7 +235,7 @@
       status:a.status, dateDelivered:a.date_delivered?String(a.date_delivered).slice(0,10):'',
       link:a.link||'', version:a.version||'v1', adCopyLink:a.ad_copy_link||'', creativeLink:a.creative_link||'',
       notes:a.notes||'', spend:num(a.spend), impressions:num(a.impressions), clicks:num(a.clicks),
-      reach:num(a.reach), leads:num(a.leads), metricsSource:a.metrics_source||''
+      reach:num(a.reach), leads:num(a.leads), metricsSource:a.metrics_source||'', createdAt:a.created_at
     };
   }
   function assetToApiBody(vals){
@@ -249,8 +263,18 @@
     countries.forEach(function(c){ if(expanded[c.id]===undefined) expanded[c.id]=true; });
     renderAll(); renderBell();
   }
-  async function refreshAssets(){ var rows=await api('/api/assets'); assets=rows.map(mapAssetFromApi); renderAll(); }
-  async function refreshCampaigns(){ var rows=await api('/api/campaigns'); campaigns=rows.map(mapCampaignFromApi); renderAll(); }
+  function dateRangeQuery(){ return (dateRange.start && dateRange.end) ? ('?start='+dateRange.start+'&end='+dateRange.end) : ''; }
+  async function refreshAssets(){ var rows=await api('/api/assets'+dateRangeQuery()); assets=rows.map(mapAssetFromApi); renderAll(); }
+  async function refreshCampaigns(){ var rows=await api('/api/campaigns'+dateRangeQuery()); campaigns=rows.map(mapCampaignFromApi); renderAll(); }
+  // Reporting period for spend/impressions/etc, same idea as LinkedIn Campaign Manager's date
+  // picker — refetches both lists so the numbers reflect the selected window, current month if unset.
+  async function reloadForDateRange(){
+    var qs=dateRangeQuery();
+    var results=await Promise.all([api('/api/campaigns'+qs), api('/api/assets'+qs)]);
+    campaigns=results[0].map(mapCampaignFromApi);
+    assets=results[1].map(mapAssetFromApi);
+    renderAll();
+  }
   async function refreshNotifications(){ var rows=await api('/api/notifications'); notifications=rows.map(mapNotifFromApi); renderBell(); }
   async function resolveCampaignId(marketId, name){
     if(!name) return null;
@@ -295,6 +319,97 @@
   function populateStatusFilter(){ var fs=document.getElementById('f-status'); var cur=fs.value; fs.innerHTML='<option value="">All statuses</option>'+STATUS_LIST.map(function(v){return '<option value="'+v+'">'+v+'</option>';}).join(''); fs.value=cur; }
   function matchesFilter(a){ var q=document.getElementById('f-search').value.toLowerCase(); var s=document.getElementById('f-status').value; if(s&&a.status!==s) return false; if(q&&a.title.toLowerCase().indexOf(q)===-1&&a.campaign.toLowerCase().indexOf(q)===-1) return false; return true; }
 
+  var DATE_PRESETS = [
+    { label:"This month", thisMonth:true },
+    { label:"All time", all:true }
+  ];
+  function applyDatePreset(p){
+    if(p.all){ dateRange={start:null,end:null}; }
+    else { var d=new Date(); dateRange={ start:isoOf(d.getFullYear(),d.getMonth(),1), end:isoToday() }; }
+  }
+  var DURATION_OPTIONS = [7, 30];
+  function addDaysIso(iso, n){
+    var p=iso.split("-").map(Number);
+    var d=new Date(p[0], p[1]-1, p[2]+n);
+    return isoOf(d.getFullYear(), d.getMonth(), d.getDate());
+  }
+  // Applies a fixed-length window starting from whichever day is already picked on the calendar
+  // (or today if none), so "7 days"/"30 days" work from any day the user clicks, not just today.
+  function applyDuration(n){
+    var startIso=dateRange.start||isoToday();
+    dateRange={ start:startIso, end:addDaysIso(startIso, n-1) };
+  }
+  function calendarGridHtml(){
+    var y=calView.y, m=calView.m;
+    var first=new Date(y,m,1);
+    var startWeekday=first.getDay();
+    var daysInMonth=new Date(y,m+1,0).getDate();
+    var monthName=first.toLocaleDateString(undefined,{month:"long",year:"numeric"});
+    var cells="";
+    for(var i=0;i<startWeekday;i++) cells+='<div></div>';
+    for(var day=1; day<=daysInMonth; day++){
+      var iso=isoOf(y,m,day);
+      var isStart=dateRange.start===iso, isEnd=dateRange.end===iso;
+      var inBetween=dateRange.start&&dateRange.end&&iso>dateRange.start&&iso<dateRange.end;
+      var bg=isStart||isEnd?"var(--indigo)":(inBetween?"var(--indigo-tint)":"transparent");
+      var col=isStart||isEnd?"#fff":"var(--ink)";
+      cells+='<button type="button" class="cal-day" data-date="'+iso+'" style="width:30px; height:30px; border-radius:8px; border:none; background:'+bg+'; color:'+col+'; cursor:pointer; font-size:12px; font-family:inherit;">'+day+'</button>';
+    }
+    return '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">'
+      + '<button type="button" class="btn btn-sm" id="cal-prev" style="padding:5px 9px;">‹</button>'
+      + '<div style="font-size:12.5px; font-weight:700;">'+monthName+'</div>'
+      + '<button type="button" class="btn btn-sm" id="cal-next" style="padding:5px 9px;">›</button>'
+      + '</div>'
+      + '<div style="display:grid; grid-template-columns:repeat(7,30px); gap:4px; font-size:10.5px; color:var(--faint); margin-bottom:4px;">'
+      + ["Su","Mo","Tu","We","Th","Fr","Sa"].map(function(d){return '<div style="text-align:center;">'+d+'</div>';}).join('')
+      + '</div>'
+      + '<div style="display:grid; grid-template-columns:repeat(7,30px); gap:4px;">'+cells+'</div>';
+  }
+  function renderDateFilter(){
+    var el=document.getElementById('date-filter');
+    if(!el) return;
+    el.innerHTML = '<button type="button" class="btn btn-sm" id="date-filter-btn">'+icon('calendar',13,'currentColor',1.8)+'<span style="margin-left:6px;">'+dateRangeLabel()+'</span></button>'
+      + (calendarOpen ? (
+        '<div id="date-filter-popover" class="card" style="position:absolute; top:calc(100% + 6px); left:0; z-index:50; padding:14px; width:264px;">'
+        + '<div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:6px;">'
+        + DATE_PRESETS.map(function(p,i){ return '<button type="button" class="btn btn-sm date-preset-btn" data-idx="'+i+'">'+p.label+'</button>'; }).join('')
+        + '</div>'
+        + '<div style="font-size:10.5px; color:var(--faint); margin-bottom:5px;">Click a day below, then pick a length:</div>'
+        + '<div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:12px;">'
+        + DURATION_OPTIONS.map(function(n){ return '<button type="button" class="btn btn-sm duration-btn" data-days="'+n+'">'+n+' days</button>'; }).join('')
+        + '</div>'
+        + calendarGridHtml()
+        + '<div style="display:flex; justify-content:flex-end; gap:8px; margin-top:12px;">'
+        + '<button type="button" class="btn btn-sm" id="date-clear-btn">Clear</button>'
+        + '<button type="button" class="btn btn-sm btn-primary" id="date-close-btn">Done</button>'
+        + '</div></div>'
+      ) : '');
+    document.getElementById('date-filter-btn').addEventListener('click', function(e){ e.stopPropagation(); calendarOpen=!calendarOpen; renderDateFilter(); });
+    if(!calendarOpen) return;
+    document.getElementById('date-filter-popover').addEventListener('click', function(e){ e.stopPropagation(); });
+    document.getElementById('cal-prev').addEventListener('click', function(){ calView.m--; if(calView.m<0){calView.m=11; calView.y--;} renderDateFilter(); });
+    document.getElementById('cal-next').addEventListener('click', function(){ calView.m++; if(calView.m>11){calView.m=0; calView.y++;} renderDateFilter(); });
+    document.querySelectorAll('.cal-day').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        var iso=btn.getAttribute('data-date');
+        if(!dateRange.start || (dateRange.start && dateRange.end)){ dateRange={ start:iso, end:null }; renderDateFilter(); }
+        else if(iso<dateRange.start){ dateRange.start=iso; renderDateFilter(); }
+        else { dateRange.end=iso; reloadForDateRange(); }
+      });
+    });
+    document.querySelectorAll('.date-preset-btn').forEach(function(btn){
+      btn.addEventListener('click', function(){ applyDatePreset(DATE_PRESETS[Number(btn.getAttribute('data-idx'))]); reloadForDateRange(); });
+    });
+    document.querySelectorAll('.duration-btn').forEach(function(btn){
+      btn.addEventListener('click', function(){ applyDuration(Number(btn.getAttribute('data-days'))); reloadForDateRange(); });
+    });
+    document.getElementById('date-clear-btn').addEventListener('click', function(){ dateRange={start:null,end:null}; reloadForDateRange(); });
+    document.getElementById('date-close-btn').addEventListener('click', function(){
+      if(dateRange.start && !dateRange.end){ dateRange.end=dateRange.start; reloadForDateRange(); }
+      calendarOpen=false; renderDateFilter();
+    });
+  }
+
   function statusBar(list){
     if(!list.length) return '';
     var counts={}; list.forEach(function(a){ counts[a.status]=(counts[a.status]||0)+1; });
@@ -306,7 +421,7 @@
 
   function perfPanel(list, marketId){
     var t=campaignTotalsFor(marketId);
-    var head='<div class="section-title" style="margin:0 0 10px;">'+icon('chart',14,'var(--muted)',1.8)+' Ad performance <span style="color:var(--faint); font-weight:600; text-transform:none; letter-spacing:0;">· current month · '+list.length+' assets</span></div>';
+    var head='<div class="section-title" style="margin:0 0 10px;">'+icon('chart',14,'var(--muted)',1.8)+' Ad performance <span style="color:var(--faint); font-weight:600; text-transform:none; letter-spacing:0;">· '+reportingPeriodLabel()+' · '+list.length+' assets</span></div>';
     var grid=metricList(t).map(function(x){ return '<div class="perf-tile"><div class="l">'+x[0]+'</div><div class="v">'+x[1]+'</div></div>'; }).join('');
     return '<div style="background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:13px 15px; margin-bottom:13px;">'+head
       + '<div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(96px,1fr)); gap:8px;">'+grid+'</div></div>';
@@ -324,7 +439,7 @@
     }).join('');
     document.getElementById('overall-perf').innerHTML =
       '<div class="card fadein" style="padding:15px 17px;">'
-      + '<div class="section-title" style="margin:0 0 11px;">'+icon('chart',14,'var(--indigo)',1.8)+' Performance by country <span style="color:var(--faint); font-weight:600; text-transform:none; letter-spacing:0;">· current month · '+countries.length+' markets</span></div>'
+      + '<div class="section-title" style="margin:0 0 11px;">'+icon('chart',14,'var(--indigo)',1.8)+' Performance by country <span style="color:var(--faint); font-weight:600; text-transform:none; letter-spacing:0;">· '+reportingPeriodLabel()+' · '+countries.length+' markets</span></div>'
       + '<div class="scroll-x"><table style="width:100%; border-collapse:collapse; font-size:12.5px; min-width:640px;">'
       + '<thead><tr style="border-bottom:1px solid var(--line);">'
       + heads.map(function(h,i){ return '<th style="text-align:'+(i===0?'left':'right')+'; padding:8px 12px; font-size:10.5px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:.04em;">'+h+'</th>'; }).join('')
@@ -514,7 +629,7 @@
     document.querySelectorAll('#table-view .table-row').forEach(function(el){ el.addEventListener('click', function(){ openAssetModal(Number(el.getAttribute('data-id'))); }); });
   }
 
-  function renderAll(){ renderStats(); renderOverall(); populateStatusFilter(); if(currentTab==='countries') renderCountryBlocks(); else renderTableView(); }
+  function renderAll(){ renderDateFilter(); renderStats(); renderOverall(); populateStatusFilter(); if(currentTab==='countries') renderCountryBlocks(); else renderTableView(); }
 
   function field(l,h){ return '<div style="margin-bottom:13px;"><label>'+l+'</label>'+h+'</div>'; }
 
@@ -543,7 +658,7 @@
       + '<div class="section-title">'+icon('copy',13,'var(--muted)',1.8)+' Creatives</div>'
       + field('Ad copies link','<input id="m-adcopy" value="'+esc(a.adCopyLink)+'" placeholder="Doc with headlines &amp; body copy" />')
       + field('Creatives link','<input id="m-creative" value="'+esc(a.creativeLink)+'" placeholder="Folder with designs, video &amp; images" />')
-      + '<div class="section-title">'+icon('chart',13,'var(--muted)',1.8)+' Ad performance (current month, campaign-level)</div>'
+      + '<div class="section-title">'+icon('chart',13,'var(--muted)',1.8)+' Ad performance ('+reportingPeriodLabel()+', campaign-level)</div>'
       + (id
           ? '<div style="display:flex; flex-wrap:wrap; gap:6px;">'+metricList(a).map(function(x){ return '<span class="chip"><b>'+x[1]+'</b> '+x[0]+'</span>'; }).join('')+'</div>'
             + '<div style="font-size:11px; color:var(--faint); margin-top:6px;">'+(a.metricsSource?('Source: '+(a.metricsSource==='sync'?'synced from LinkedIn':'manual entry')+' · '):'')+'Metrics are logged per campaign — use “Log numbers” on the campaign in the country view.</div>'
@@ -769,6 +884,7 @@
   document.getElementById('nav-table-btn').addEventListener('click', function(){ setNav('table'); });
   document.getElementById('f-search').addEventListener('input', renderAll);
   document.getElementById('f-status').addEventListener('change', renderAll);
+  document.addEventListener('click', function(){ if(calendarOpen){ calendarOpen=false; renderDateFilter(); } });
 
   setNav('countries');
   load();
