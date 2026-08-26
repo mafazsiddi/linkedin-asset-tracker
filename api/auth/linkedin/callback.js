@@ -1,9 +1,9 @@
 const { query } = require('../../../lib/db');
-const { json } = require('../../../lib/util');
+const { json, withHandler } = require('../../../lib/util');
 
 // Exchanges the OAuth code for tokens and stores them. Once this succeeds, flip
 // LINKEDIN_MODE=live and the daily cron will call the real LinkedIn API.
-module.exports = async function handler(req, res) {
+module.exports = withHandler(async function handler(req, res) {
   const clientId = process.env.LINKEDIN_CLIENT_ID;
   const clientSecret = process.env.LINKEDIN_CLIENT_SECRET;
   const redirectUri = process.env.LINKEDIN_REDIRECT_URI;
@@ -38,4 +38,4 @@ module.exports = async function handler(req, res) {
     [tokenData.access_token, tokenData.refresh_token || null, expiresAt]
   );
   return json(res, 200, { ok: true, message: 'LinkedIn account connected. Set LINKEDIN_MODE=live to start using it.' });
-};
+});

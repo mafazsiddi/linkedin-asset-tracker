@@ -1,7 +1,7 @@
 const { query } = require('../../lib/db');
-const { json, methodNotAllowed } = require('../../lib/util');
+const { json, methodNotAllowed, withHandler } = require('../../lib/util');
 
-module.exports = async function handler(req, res) {
+module.exports = withHandler(async function handler(req, res) {
   const id = Number(req.query.id);
 
   if (req.method === 'PUT') {
@@ -26,4 +26,4 @@ module.exports = async function handler(req, res) {
   }
 
   return methodNotAllowed(res, ['PUT', 'DELETE']);
-};
+});

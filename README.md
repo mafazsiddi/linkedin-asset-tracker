@@ -79,6 +79,12 @@ Only campaigns with a `li_campaign_id` set are included in the daily sync.
 
 ## API summary
 
+> **Function budget:** Vercel's Hobby plan allows **12 Serverless Functions per deployment**, and
+> `api/` currently holds exactly 12 — deploying a 13th file fails the build outright. Add new
+> endpoints as extra methods/query params on an existing handler (as `?creatives=1` and the
+> `/api/notifications/read` rewrite in `vercel.json` both do), not as new files.
+
+
 | Endpoint | Methods | Notes |
 |---|---|---|
 | `/api/markets` | GET, POST | list / create markets |
@@ -90,5 +96,48 @@ Only campaigns with a `li_campaign_id` set are included in the daily sync.
 | `/api/metrics/manual` | POST | manual stopgap entry for a campaign/day; sync overwrites it |
 | `/api/notifications` | GET | |
 | `/api/notifications/read` | POST | `{}` marks all read, `{"clear":true}` deletes all |
-| `/api/cron/sync` | GET/POST | daily LinkedIn sync, protected by `CRON_SECRET` |
+| `/api/cron/sync` | GET/POST | LinkedIn sync, protected by `CRON_SECRET`. `?days=N`, `?start=&end=`, `?campaignId=N` |
+| `/api/campaigns/:id?creatives=1` | GET | lists the real LinkedIn ads under a campaign, so an asset can be linked to one |
+| `/api/health` | GET | diagnostics — DB reachability, schema completeness, token validity, last sync |
 | `/api/auth/linkedin/start`, `/callback` | GET | OAuth flow, inert until LinkedIn app is approved |
+
+## How metrics reach an asset
+
+Metrics land at two levels, and which one an asset shows depends on whether it's linked to a
+specific LinkedIn ad:
+
+- **Campaign level** (`campaign_daily_metrics`, `pivot=CAMPAIGN`) — needs `li_campaign_id` on the
+  campaign. Without it the sync has nothing to fetch and everything stays at zero.
+- **Ad level** (`asset_daily_metrics`, `pivot=CREATIVE`) — needs `li_creative_id` on the asset. Set
+  it from the asset modal ("Find ads" pulls the real IDs from LinkedIn via `/api/creatives`).
+
+An asset with **no** `li_creative_id` falls back to showing its parent campaign's totals, reported
+as `metrics_source: "campaign"` — shared with every other asset on that campaign. An asset that
+*is* linked but has no data is genuinely not serving, and correctly stays at zero.
+
+The sync re-fetches a **trailing window** (`SYNC_WINDOW_DAYS`, default 7) on every run rather than
+just the current day. LinkedIn restates a day's numbers for ~2-3 days as clicks are de-duplicated
+and conversions attributed, so a single-day fetch permanently bakes in whatever was true at that
+moment — and any skipped run left a hole in the month-to-date sum that never healed. Re-fetching a
+window makes the stored data self-correcting.
+
+Adding a campaign with a LinkedIn ID (or attaching one later) triggers an immediate month-to-date
+backfill, so it shows real numbers straight away instead of waiting for the next scheduled run.
+
+## Troubleshooting
+
+**Start with `/api/health`.** It distinguishes the failure modes that otherwise all look identical
+in the UI (an empty table):
+
+| Symptom | Cause |
+|---|---|
+| `database.code: "28P01"` | `POSTGRES_URL` is stale. Vercel bakes env vars in at **deploy** time — changing the variable is not enough, you must redeploy (`vercel --prod`). |
+| `database.missingTables: [...]` | Database is reachable but empty — run `psql "$POSTGRES_URL" -f db/schema.sql`. |
+| `linkedin.tokenStored: false` while `mode: "live"` | Nobody has authorised the app. Visit `/api/auth/linkedin/start`. |
+| `linkedin.tokenExpired: true` | Reconnect via `/api/auth/linkedin/start`. |
+| `counts.campaignsWithLinkedInId: 0` | No campaign has a LinkedIn campaign ID, so the sync has nothing to fetch. |
+| `sync.daysWithDataThisMonth` lower than expected | Missing days — the month-to-date total is under-counting. Backfill with `/api/cron/sync?start=YYYY-MM-DD&end=YYYY-MM-DD`. |
+
+`sync.last.error` carries the last run's failure text. A run that partially fails now reports
+`status: "partial"` and still syncs every campaign that worked, rather than aborting on the first
+bad one.

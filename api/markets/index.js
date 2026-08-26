@@ -1,7 +1,7 @@
 const { query } = require('../../lib/db');
-const { json, methodNotAllowed } = require('../../lib/util');
+const { json, methodNotAllowed, withHandler } = require('../../lib/util');
 
-module.exports = async function handler(req, res) {
+module.exports = withHandler(async function handler(req, res) {
   if (req.method === 'GET') {
     const { rows } = await query('select * from markets order by name');
     return json(res, 200, rows);
@@ -19,4 +19,4 @@ module.exports = async function handler(req, res) {
   }
 
   return methodNotAllowed(res, ['GET', 'POST']);
-};
+});

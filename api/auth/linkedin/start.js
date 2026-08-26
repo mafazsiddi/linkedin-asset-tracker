@@ -1,9 +1,9 @@
-const { json } = require('../../../lib/util');
+const { json, withHandler } = require('../../../lib/util');
 
 // Kicks off the LinkedIn OAuth flow. Inert (returns 501) until LINKEDIN_CLIENT_ID and
 // LINKEDIN_REDIRECT_URI are set, which only happens once the Marketing Developer Platform app
 // is approved — see README.
-module.exports = async function handler(req, res) {
+module.exports = withHandler(async function handler(req, res) {
   const clientId = process.env.LINKEDIN_CLIENT_ID;
   const redirectUri = process.env.LINKEDIN_REDIRECT_URI;
   if (!clientId || !redirectUri) {
@@ -19,4 +19,4 @@ module.exports = async function handler(req, res) {
     `&scope=${scope}`;
   res.writeHead(302, { Location: url });
   res.end();
-};
+});

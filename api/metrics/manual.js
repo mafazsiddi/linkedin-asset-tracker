@@ -1,9 +1,9 @@
 const { query } = require('../../lib/db');
-const { json, methodNotAllowed, todayISO } = require('../../lib/util');
+const { json, methodNotAllowed, todayISO, withHandler } = require('../../lib/util');
 
 // Manual stopgap logging for a campaign/day until the daily sync goes live. The sync always
 // overwrites whatever is here for that day once it runs (source flips to 'sync').
-module.exports = async function handler(req, res) {
+module.exports = withHandler(async function handler(req, res) {
   if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
   const b = req.body || {};
   if (!b.campaignId) return json(res, 400, { error: 'campaignId is required' });
@@ -17,4 +17,4 @@ module.exports = async function handler(req, res) {
     [Number(b.campaignId), date, b.spend || 0, b.impressions || 0, b.clicks || 0, b.reach || 0, b.leads || 0]
   );
   return json(res, 200, rows[0]);
-};
+});

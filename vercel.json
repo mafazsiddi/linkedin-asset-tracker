@@ -1,5 +1,8 @@
 {
   "crons": [
     { "path": "/api/cron/sync", "schedule": "0 3 * * *" }
+  ],
+  "rewrites": [
+    { "source": "/api/notifications/read", "destination": "/api/notifications" }
   ]
 }

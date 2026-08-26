@@ -231,6 +231,7 @@
     return {
       id:a.id, title:a.title, type:a.type, marketId:a.market_id, market:a.market_name,
       campaignId:a.campaign_id, campaign:a.campaign_name||'', liCampaignId:a.li_campaign_id||'',
+      liCreativeId:a.li_creative_id||'',
       assignedTo:a.assigned_to||'', dueDate:a.due_date?String(a.due_date).slice(0,10):'',
       status:a.status, dateDelivered:a.date_delivered?String(a.date_delivered).slice(0,10):'',
       link:a.link||'', version:a.version||'v1', adCopyLink:a.ad_copy_link||'', creativeLink:a.creative_link||'',
@@ -243,7 +244,8 @@
       title:vals.title, type:vals.type, marketId:vals.marketId, campaignId:vals.campaignId,
       assignedTo:vals.assignedTo, dueDate:vals.dueDate||null, status:vals.status,
       dateDelivered:vals.dateDelivered||null, link:vals.link, version:vals.version,
-      adCopyLink:vals.adCopyLink, creativeLink:vals.creativeLink, notes:vals.notes
+      adCopyLink:vals.adCopyLink, creativeLink:vals.creativeLink, notes:vals.notes,
+      liCreativeId:vals.liCreativeId || null
     };
   }
   function mapNotifFromApi(n){ return { id:n.id, to:n.to_name, title:n.asset_title, market:n.market_name, ts:new Date(n.created_at).getTime(), read:n.read }; }
@@ -632,12 +634,21 @@
   function renderAll(){ renderDateFilter(); renderStats(); renderOverall(); populateStatusFilter(); if(currentTab==='countries') renderCountryBlocks(); else renderTableView(); }
 
   function field(l,h){ return '<div style="margin-bottom:13px;"><label>'+l+'</label>'+h+'</div>'; }
+  // Says where an asset's numbers actually came from. 'campaign' means the asset has no LinkedIn
+  // ad linked, so it is showing its whole campaign's totals — shared with every other asset on
+  // that campaign — rather than figures specific to this one ad.
+  function metricsSourceNote(a){
+    if(a.metricsSource==='sync') return 'Source: this ad, synced from LinkedIn.';
+    if(a.metricsSource==='manual') return 'Source: manual entry.';
+    if(a.metricsSource==='campaign') return 'No LinkedIn ad linked — showing the whole campaign’s totals, shared with every other asset on it. Add the ad/creative ID above for numbers specific to this asset.';
+    return 'No data for this period yet. Campaigns need a LinkedIn campaign ID before the sync can fetch anything.';
+  }
 
   function openAssetModal(id, presetMarketId){
     var a = id ? assets.find(function(x){return x.id===id;}) : {
       title:"", type:"Image", marketId: presetMarketId||null, campaign:"",
       assignedTo:"", dueDate:"", status:"Requested", dateDelivered:"",
-      link:"", version:"v1", adCopyLink:"", creativeLink:"", notes:"",
+      link:"", version:"v1", adCopyLink:"", creativeLink:"", notes:"", liCreativeId:"",
       spend:0, impressions:0, clicks:0, reach:0, leads:0, metricsSource:""
     };
     var typeOpts=TYPE_LIST.map(function(t){return '<option '+(a.type===t?'selected':'')+'>'+t+'</option>';}).join('');
@@ -648,6 +659,10 @@
       + field('Asset title','<input id="m-title" value="'+esc(a.title)+'" placeholder="60-sec explainer video" />')
       + '<div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">'+field('Country','<select id="m-market">'+marketOpts+'</select>')+field('Type','<select id="m-type">'+typeOpts+'</select>')+'</div>'
       + field('LinkedIn campaign (exact Campaign Manager name)','<input id="m-campaign" list="m-campaign-list" value="'+esc(a.campaign)+'" placeholder="UAE_EN - Compliance" /><datalist id="m-campaign-list"></datalist>')
+      + field('LinkedIn ad / creative ID <span style="font-weight:400; color:var(--faint);">— optional, gives this asset its own numbers</span>',
+          '<div style="display:flex; gap:8px;"><input id="m-licreative" list="m-creative-list" value="'+esc(a.liCreativeId||'')+'" placeholder="e.g. 123456789" style="flex:1;" /><datalist id="m-creative-list"></datalist>'
+          + '<button type="button" id="m-fetch-creatives" class="btn-ghost" style="white-space:nowrap;">Find ads</button></div>'
+          + '<div id="m-creative-hint" style="font-size:11px; color:var(--faint); margin-top:4px;">Without this, the asset shows its campaign’s combined numbers.</div>')
       + field('Assigned to (content)','<input id="m-assignedto" value="'+esc(a.assignedTo)+'" placeholder="Who is doing the work" />')
       + '<div style="display:flex; align-items:center; gap:6px; font-size:11px; color:var(--indigo); margin:-6px 0 13px;">'+icon('bell',12,'currentColor',1.9)+'<span>The assignee is notified when you save.</span></div>'
       + field('Status','<select id="m-status">'+statusOpts+'</select>')
@@ -658,10 +673,10 @@
       + '<div class="section-title">'+icon('copy',13,'var(--muted)',1.8)+' Creatives</div>'
       + field('Ad copies link','<input id="m-adcopy" value="'+esc(a.adCopyLink)+'" placeholder="Doc with headlines &amp; body copy" />')
       + field('Creatives link','<input id="m-creative" value="'+esc(a.creativeLink)+'" placeholder="Folder with designs, video &amp; images" />')
-      + '<div class="section-title">'+icon('chart',13,'var(--muted)',1.8)+' Ad performance ('+reportingPeriodLabel()+', campaign-level)</div>'
+      + '<div class="section-title">'+icon('chart',13,'var(--muted)',1.8)+' Ad performance ('+reportingPeriodLabel()+', '+(a.liCreativeId?'this ad':'campaign-level')+')</div>'
       + (id
           ? '<div style="display:flex; flex-wrap:wrap; gap:6px;">'+metricList(a).map(function(x){ return '<span class="chip"><b>'+x[1]+'</b> '+x[0]+'</span>'; }).join('')+'</div>'
-            + '<div style="font-size:11px; color:var(--faint); margin-top:6px;">'+(a.metricsSource?('Source: '+(a.metricsSource==='sync'?'synced from LinkedIn':'manual entry')+' · '):'')+'Metrics are logged per campaign — use “Log numbers” on the campaign in the country view.</div>'
+            + '<div style="font-size:11px; color:var(--faint); margin-top:6px;">'+metricsSourceNote(a)+'</div>'
           : '<div style="font-size:11.5px; color:var(--faint);">Save the asset first, then log performance for its campaign from the country view.</div>');
 
     showModal(id?'Edit asset':'New asset', body, async function(){
@@ -675,7 +690,8 @@
         assignedTo: v('m-assignedto'),
         dueDate: document.getElementById('m-duedate').value, dateDelivered: document.getElementById('m-delivered').value,
         status: document.getElementById('m-status').value, link: v('m-link'), version: v('m-version'),
-        adCopyLink: v('m-adcopy'), creativeLink: v('m-creative'), notes: v('m-notes')
+        adCopyLink: v('m-adcopy'), creativeLink: v('m-creative'), notes: v('m-notes'),
+        liCreativeId: v('m-licreative')
       };
       vals.campaignId = await resolveCampaignId(marketId, campaignName);
       var payload = assetToApiBody(vals);
@@ -706,6 +722,32 @@
     }
     marketSel.addEventListener('change', refreshCampaignDatalist);
     refreshCampaignDatalist();
+
+    // Pulls the real ads under the typed campaign so the creative ID can be picked rather than
+    // copied out of Campaign Manager by hand.
+    document.getElementById('m-fetch-creatives').addEventListener('click', async function(){
+      var hint = document.getElementById('m-creative-hint');
+      var campaignId = campaignIdForName(Number(marketSel.value)||null, v('m-campaign'));
+      if(!campaignId){ hint.textContent = 'Pick a country and an existing campaign first, then save once.'; return; }
+      hint.textContent = 'Looking up ads…';
+      try {
+        var list = await api('/api/campaigns/'+campaignId+'?creatives=1');
+        if(!list.length){ hint.textContent = 'LinkedIn returned no ads for this campaign.'; return; }
+        document.getElementById('m-creative-list').innerHTML = list.map(function(c){
+          var label = c.name + (c.linkedToAsset ? ' — already on “'+c.linkedToAsset+'”' : '');
+          return '<option value="'+esc(c.creativeId)+'">'+esc(label)+'</option>';
+        }).join('');
+        hint.textContent = list.length+' ad'+(list.length===1?'':'s')+' found — pick one from the field above.';
+      } catch(e){
+        hint.textContent = e.message;
+      }
+    });
+  }
+  // Local campaign row for a market + exact name, without creating one as resolveCampaignId does.
+  function campaignIdForName(marketId, name){
+    if(!name) return null;
+    var c = campaigns.find(function(x){ return x.marketId===marketId && x.name.toLowerCase()===name.toLowerCase(); });
+    return c ? c.id : null;
   }
   function v(id){ return document.getElementById(id).value.trim(); }
 

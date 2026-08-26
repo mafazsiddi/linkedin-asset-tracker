@@ -1,30 +1,8 @@
 const { query } = require('../../lib/db');
-const { json, methodNotAllowed, currentMonthRange } = require('../../lib/util');
+const { json, methodNotAllowed, currentMonthRange, withHandler } = require('../../lib/util');
+const { ASSET_SELECT } = require('../../lib/queries');
 
-const ASSET_SELECT = `
-  select a.*,
-         m.name as market_name,
-         c.name as campaign_name,
-         c.li_campaign_id as li_campaign_id,
-         coalesce(am.spend, 0) as spend,
-         coalesce(am.impressions, 0) as impressions,
-         coalesce(am.clicks, 0) as clicks,
-         coalesce(am.reach, 0) as reach,
-         coalesce(am.leads, 0) as leads,
-         am.source as metrics_source
-  from assets a
-  join markets m on m.id = a.market_id
-  left join campaigns c on c.id = a.campaign_id
-  left join lateral (
-    select sum(spend) as spend, sum(impressions) as impressions, sum(clicks) as clicks,
-           sum(reach) as reach, sum(leads) as leads,
-           (array_agg(source order by metric_date desc))[1] as source
-    from asset_daily_metrics
-    where asset_id = a.id and metric_date >= $1 and metric_date <= $2
-  ) am on true
-`;
-
-module.exports = async function handler(req, res) {
+module.exports = withHandler(async function handler(req, res) {
   const id = Number(req.query.id);
 
   if (req.method === 'PUT') {
@@ -37,6 +15,9 @@ module.exports = async function handler(req, res) {
       type: b.type ?? prev.type,
       market_id: b.marketId ? Number(b.marketId) : prev.market_id,
       campaign_id: b.campaignId !== undefined ? (b.campaignId ? Number(b.campaignId) : null) : prev.campaign_id,
+      // Can be explicitly cleared to null, so distinguish "not sent" from "cleared" — same as
+      // li_campaign_id on campaigns.
+      li_creative_id: b.liCreativeId !== undefined ? (b.liCreativeId || null) : prev.li_creative_id,
       requested_by: b.requestedBy ?? prev.requested_by,
       assigned_to: b.assignedTo ?? prev.assigned_to,
       priority: b.priority ?? prev.priority,
@@ -53,12 +34,13 @@ module.exports = async function handler(req, res) {
       `update assets set
          title=$2, type=$3, market_id=$4, campaign_id=$5, requested_by=$6, assigned_to=$7,
          priority=$8, due_date=$9, status=$10, date_delivered=$11, link=$12, version=$13,
-         ad_copy_link=$14, creative_link=$15, notes=$16, updated_at=now()
+         ad_copy_link=$14, creative_link=$15, notes=$16, li_creative_id=$17, updated_at=now()
        where id=$1 returning *`,
       [
         id, merged.title, merged.type, merged.market_id, merged.campaign_id, merged.requested_by,
         merged.assigned_to, merged.priority, merged.due_date, merged.status, merged.date_delivered,
-        merged.link, merged.version, merged.ad_copy_link, merged.creative_link, merged.notes
+        merged.link, merged.version, merged.ad_copy_link, merged.creative_link, merged.notes,
+        merged.li_creative_id
       ]
     );
     const asset = rows[0];
@@ -80,4 +62,4 @@ module.exports = async function handler(req, res) {
   }
 
   return methodNotAllowed(res, ['PUT', 'DELETE']);
-};
+});

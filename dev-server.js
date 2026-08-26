@@ -26,6 +26,7 @@ function loadEnvFile(){
 loadEnvFile();
 
 const ROUTES = [
+  [/^\/api\/health\/?$/, 'api/health.js'],
   [/^\/api\/markets\/([^/]+)\/?$/, 'api/markets/[id].js', 'id'],
   [/^\/api\/markets\/?$/, 'api/markets/index.js'],
   [/^\/api\/campaigns\/([^/]+)\/?$/, 'api/campaigns/[id].js', 'id'],
@@ -33,7 +34,8 @@ const ROUTES = [
   [/^\/api\/assets\/([^/]+)\/?$/, 'api/assets/[id].js', 'id'],
   [/^\/api\/assets\/?$/, 'api/assets/index.js'],
   [/^\/api\/metrics\/manual\/?$/, 'api/metrics/manual.js'],
-  [/^\/api\/notifications\/read\/?$/, 'api/notifications/read.js'],
+  // Mirrors the rewrite in vercel.json — /read is served by the notifications function itself.
+  [/^\/api\/notifications\/read\/?$/, 'api/notifications/index.js'],
   [/^\/api\/notifications\/?$/, 'api/notifications/index.js'],
   [/^\/api\/cron\/sync\/?$/, 'api/cron/sync.js'],
   [/^\/api\/auth\/linkedin\/start\/?$/, 'api/auth/linkedin/start.js'],
