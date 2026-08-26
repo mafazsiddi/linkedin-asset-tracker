@@ -511,7 +511,13 @@
   // panel used to list every campaign ever created, which buried the handful actually running.
   function visibleCampaignsForMarket(marketId){
     var all = campaignsForMarket(marketId);
-    return showAllCampaigns ? all : all.filter(isCampaignLive);
+    if(showAllCampaigns) return all;
+    // Before the first metadata sync no campaign has a status, and filtering on "live" would hide
+    // every one of them — an empty panel that looks like data loss. Only filter once LinkedIn has
+    // actually told us which are running.
+    var anyKnown = all.some(function(c){ return c.status || c.servingStatus; });
+    if(!anyKnown) return all;
+    return all.filter(isCampaignLive);
   }
   function campaignMetricsRow(c){
     return { spend:c.spend, impressions:c.impressions, clicks:c.clicks, reach:c.reach, leads:c.leads, source:c.metricsSource };

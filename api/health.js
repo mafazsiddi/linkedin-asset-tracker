@@ -1,6 +1,7 @@
 const { query } = require('../lib/db');
 const { json, methodNotAllowed, withHandler, currentMonthRange, todayISO, addDaysISO } = require('../lib/util');
 const { getCampaignDailyStatsRange } = require('../lib/linkedin');
+const { ensureSchema } = require('../lib/migrate');
 
 // One place to answer "why are the numbers wrong / why is nothing loading" without needing
 // database access. Every previous failure — a rotated Postgres password, an unapplied schema, an
@@ -47,13 +48,24 @@ module.exports = withHandler(async function handler(req, res) {
     return json(res, 503, out);
   }
 
+  // Bring the schema forward here as well as in the sync, so a deploy that adds columns can be
+  // settled by hitting this endpoint rather than waiting for the next scheduled run.
+  try {
+    out.database.migration = await ensureSchema(Boolean(req.query && req.query.migrate));
+  } catch (e) {
+    out.database.migration = { error: e.message };
+  }
+
   const [{ rows: counts }, { rows: tokens }, { rows: lastSync }] = await Promise.all([
     query(`select
              (select count(*) from markets) as markets,
              (select count(*) from campaigns) as campaigns,
              (select count(*) from campaigns where li_campaign_id is not null) as campaigns_linked,
+             (select count(*) from campaigns where serving_status = 'RUNNING') as campaigns_live,
+             (select count(*) from campaigns where status is not null) as campaigns_with_status,
              (select count(*) from assets) as assets,
-             (select count(*) from assets where li_creative_id is not null) as assets_linked`),
+             (select count(*) from assets where li_creative_id is not null) as assets_linked,
+             (select count(*) from assets where imported_from_linkedin) as assets_imported`),
     query('select expires_at, updated_at from linkedin_tokens order by updated_at desc limit 1'),
     query('select run_at, status, campaigns_synced, error from sync_log order by run_at desc limit 1')
   ]);
@@ -63,8 +75,11 @@ module.exports = withHandler(async function handler(req, res) {
     markets: Number(c.markets),
     campaigns: Number(c.campaigns),
     campaignsWithLinkedInId: Number(c.campaigns_linked),
+    campaignsLive: Number(c.campaigns_live),
+    campaignsWithStatus: Number(c.campaigns_with_status),
     assets: Number(c.assets),
-    assetsWithCreativeId: Number(c.assets_linked)
+    assetsWithCreativeId: Number(c.assets_linked),
+    assetsImportedFromLinkedIn: Number(c.assets_imported)
   };
 
   const token = tokens[0];
