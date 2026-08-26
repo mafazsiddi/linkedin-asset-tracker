@@ -236,17 +236,25 @@
     };
   }
   // LinkedIn reports campaign state two ways: `status` is what the advertiser set (ACTIVE, PAUSED,
-  // ARCHIVED...) and `servingStatuses` is whether it is actually delivering right now. A campaign
-  // can be ACTIVE but held back by billing or a date window, so both are consulted.
+  // ARCHIVED...) and `servingStatuses` says whether it can actually deliver right now. The two
+  // disagree often — most of this account's ACTIVE campaigns sit on CAMPAIGN_GROUP_STATUS_HOLD
+  // because their parent group is paused, and are not running at all. RUNNABLE is the only value
+  // that means delivering; everything else is a stop or a hold (billing, budget, date window,
+  // group status).
   function isCampaignLive(c){
-    if(c.servingStatus) return c.servingStatus==='RUNNING';
+    if(c.servingStatus) return c.servingStatus==='RUNNABLE';
     return c.status==='ACTIVE';
   }
+  function titleCase(s){ s=(s||'').replace(/_/g,' ').toLowerCase(); return s.charAt(0).toUpperCase()+s.slice(1); }
   function campaignStateLabel(c){
     if(!c.status && !c.servingStatus) return { text:'Not synced', tone:'muted' };
     if(isCampaignLive(c)) return { text:'Live', tone:'live' };
-    var s=(c.status||'').replace(/_/g,' ').toLowerCase();
-    return { text:s.charAt(0).toUpperCase()+s.slice(1) || 'Not live', tone:'muted' };
+    // An ACTIVE campaign that isn't delivering is the confusing case — name the hold rather than
+    // just calling it "Active", which would imply it's running.
+    if(c.servingStatus && c.servingStatus!=='STOPPED'){
+      return { text:titleCase(c.servingStatus.replace(/_STATUS_HOLD$/,' hold').replace(/_HOLD$/,' hold')), tone:'hold' };
+    }
+    return { text:titleCase(c.status) || 'Not live', tone:'muted' };
   }
   function mapAssetFromApi(a){
     return {
@@ -555,7 +563,9 @@
         + '<div style="font-size:12.5px; font-weight:600; display:flex; align-items:center; gap:7px; flex-wrap:wrap;">'+esc(cam.name)
         + '<span class="chip" style="'+(state.tone==='live'
             ? 'background:rgba(52,199,123,.16); color:#5BD99A;'
-            : 'background:var(--line-soft); color:var(--faint);')+'">'
+            : state.tone==='hold'
+              ? 'background:rgba(240,180,60,.15); color:#E3B341;'
+              : 'background:var(--line-soft); color:var(--faint);')+'">'
         + (state.tone==='live'?'<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#34C77B;margin-right:5px;"></span>':'')
         + esc(state.text)+'</span></div>'
         + '<div style="font-size:11px; color:var(--faint);">'+(cam.liCampaignId?esc(cam.liCampaignId):'No LinkedIn campaign ID yet')+(m.source?' · '+(m.source==='sync'?'synced':'manual'):'')+(meta.length?' · '+meta.join(' · '):'')+'</div></div>'

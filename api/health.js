@@ -61,7 +61,8 @@ module.exports = withHandler(async function handler(req, res) {
              (select count(*) from markets) as markets,
              (select count(*) from campaigns) as campaigns,
              (select count(*) from campaigns where li_campaign_id is not null) as campaigns_linked,
-             (select count(*) from campaigns where serving_status = 'RUNNING') as campaigns_live,
+             -- RUNNABLE, not RUNNING: see isCampaignLive in index.html.
+             (select count(*) from campaigns where serving_status = 'RUNNABLE') as campaigns_live,
              (select count(*) from campaigns where status is not null) as campaigns_with_status,
              (select count(*) from assets) as assets,
              (select count(*) from assets where li_creative_id is not null) as assets_linked,
