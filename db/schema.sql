@@ -17,6 +17,19 @@ create table if not exists campaigns (
   li_campaign_id text unique,
   name text not null,
   market_id integer not null references markets(id) on delete cascade,
+  -- Mirrored from LinkedIn by the sync. `status` is what the advertiser set (ACTIVE, PAUSED,
+  -- ARCHIVED...); `serving_status` is whether it is actually delivering right now — a campaign can
+  -- be ACTIVE but held by billing or its date window. The UI shows only live campaigns by default.
+  status text,
+  serving_status text,
+  objective text,
+  format text,
+  cost_type text,
+  daily_budget numeric,
+  budget_currency text,
+  run_start date,
+  run_end date,
+  li_synced_at timestamptz,
   created_at timestamptz not null default now()
 );
 
@@ -26,7 +39,13 @@ create table if not exists assets (
   type text not null default 'Image',
   market_id integer not null references markets(id) on delete cascade,
   campaign_id integer references campaigns(id) on delete set null,
+  -- The LinkedIn ad (creative) this asset represents. Assets imported straight from LinkedIn get
+  -- this set automatically; an asset without one falls back to showing its campaign's totals.
   li_creative_id text,
+  li_status text,
+  li_is_serving boolean,
+  li_synced_at timestamptz,
+  imported_from_linkedin boolean not null default false,
   requested_by text,
   assigned_to text,
   priority text default 'Medium',
@@ -111,3 +130,11 @@ values
   ('India', 'Mr. AJ'),
   ('Global', 'Tanya Gupta')
 on conflict (name) do nothing;
+
+-- The ad importer matches on li_creative_id and must never create the same ad twice, even if two
+-- syncs overlap. Partial so pre-existing rows without a creative id are unaffected.
+create unique index if not exists assets_li_creative_id_key
+  on assets (li_creative_id) where li_creative_id is not null;
+
+create index if not exists campaign_daily_metrics_date_idx on campaign_daily_metrics (metric_date);
+create index if not exists asset_daily_metrics_date_idx on asset_daily_metrics (metric_date);

@@ -101,6 +101,43 @@ Only campaigns with a `li_campaign_id` set are included in the daily sync.
 | `/api/health` | GET | diagnostics — DB reachability, schema completeness, token validity, last sync |
 | `/api/auth/linkedin/start`, `/callback` | GET | OAuth flow, inert until LinkedIn app is approved |
 
+## Ads are imported from LinkedIn automatically
+
+The sync pulls the ads (creatives) that actually exist under each campaign and creates an asset row
+for each one — matched on `li_creative_id`, which is uniquely indexed, so re-running only fills in
+ads that have appeared since. Adding a campaign with a LinkedIn ID imports its ads immediately
+rather than waiting for the next scheduled run.
+
+Existing assets are refreshed in place, never duplicated, and only the columns LinkedIn owns
+(`li_status`, `li_is_serving`) are touched — locally edited fields like assignee, due date, notes
+and links are left alone. Run a metrics-only sync with `?skipImport=1`.
+
+Campaign status, objective, budget and schedule are mirrored too. That's what powers the
+**live-only campaign filter**: LinkedIn reports state two ways — `status` is what the advertiser
+set (`ACTIVE`, `PAUSED`, `ARCHIVED`…) and `servingStatuses` is whether it's delivering *right now*,
+since a campaign can be `ACTIVE` but held by billing or its date window. The UI treats
+`serving_status = RUNNING` as live and hides the rest behind a "Show non-live campaigns" toggle.
+
+> Market-level totals deliberately still sum **all** campaigns, not just live ones — spend in the
+> period is spend in the period, and filtering it would under-report the month.
+
+### API paths
+
+LinkedIn retired the account-less creative and campaign endpoints; both now require the advertiser
+account in the path and return a 400 explaining so if you use the old form:
+
+- `/rest/adAccounts/{adAccountId}/creatives` (not `/rest/creatives`)
+- `/rest/adAccounts/{adAccountId}/adCampaigns` (not `/rest/adCampaigns`)
+
+The account id is the numeric tail of `LINKEDIN_AD_ACCOUNT_URN`.
+
+### Schema migrations
+
+`lib/migrate.js` applies idempotent `add column if not exists` statements on demand, because the
+production database is provisioned through the Vercel/Neon integration and its connection string is
+marked sensitive — there's no practical way to run `psql` against it by hand. The sync calls it
+before each run. `db/schema.sql` carries the same columns for fresh installs; keep the two in step.
+
 ## How metrics reach an asset
 
 Metrics land at two levels, and which one an asset shows depends on whether it's linked to a

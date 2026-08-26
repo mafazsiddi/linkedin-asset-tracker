@@ -181,6 +181,9 @@
   var METRIC_FIELDS = ["spend","impressions","clicks","reach","leads"];
 
   var assets = [], countries = [], campaigns = [], notifications = [], expanded = {}, currentTab = "countries";
+  // Campaign panels show only what LinkedIn is currently delivering; this reveals the rest.
+  // Persisted so the choice survives a reload.
+  var showAllCampaigns = (function(){ try { return localStorage.getItem('showAllCampaigns')==='1'; } catch(e){ return false; } })();
   var activeAssetTab = {}, tabMainSwipers = {}, tabThumbSwipers = {};
   var dateRange = { start:null, end:null };
   var calendarOpen = false;
@@ -224,8 +227,26 @@
     return {
       id:c.id, name:c.name, marketId:c.market_id, marketName:c.market_name||'', liCampaignId:c.li_campaign_id||'',
       spend:num(c.spend), impressions:num(c.impressions), clicks:num(c.clicks), reach:num(c.reach), leads:num(c.leads),
-      metricsSource:c.metrics_source||'', createdAt:c.created_at
+      metricsSource:c.metrics_source||'', createdAt:c.created_at,
+      status:c.status||'', servingStatus:c.serving_status||'', objective:c.objective||'',
+      format:c.format||'', costType:c.cost_type||'',
+      dailyBudget:c.daily_budget==null?null:num(c.daily_budget), budgetCurrency:c.budget_currency||'',
+      runStart:c.run_start?String(c.run_start).slice(0,10):'', runEnd:c.run_end?String(c.run_end).slice(0,10):'',
+      liSyncedAt:c.li_synced_at||null
     };
+  }
+  // LinkedIn reports campaign state two ways: `status` is what the advertiser set (ACTIVE, PAUSED,
+  // ARCHIVED...) and `servingStatuses` is whether it is actually delivering right now. A campaign
+  // can be ACTIVE but held back by billing or a date window, so both are consulted.
+  function isCampaignLive(c){
+    if(c.servingStatus) return c.servingStatus==='RUNNING';
+    return c.status==='ACTIVE';
+  }
+  function campaignStateLabel(c){
+    if(!c.status && !c.servingStatus) return { text:'Not synced', tone:'muted' };
+    if(isCampaignLive(c)) return { text:'Live', tone:'live' };
+    var s=(c.status||'').replace(/_/g,' ').toLowerCase();
+    return { text:s.charAt(0).toUpperCase()+s.slice(1) || 'Not live', tone:'muted' };
   }
   function mapAssetFromApi(a){
     return {
@@ -486,27 +507,70 @@
   }
 
   function campaignsForMarket(marketId){ return campaigns.filter(function(c){return c.marketId===marketId;}); }
+  // Only campaigns LinkedIn reports as delivering, unless the user asks to see everything. The
+  // panel used to list every campaign ever created, which buried the handful actually running.
+  function visibleCampaignsForMarket(marketId){
+    var all = campaignsForMarket(marketId);
+    return showAllCampaigns ? all : all.filter(isCampaignLive);
+  }
   function campaignMetricsRow(c){
     return { spend:c.spend, impressions:c.impressions, clicks:c.clicks, reach:c.reach, leads:c.leads, source:c.metricsSource };
   }
+  // Everything LinkedIn gives us per campaign, plus the ratios derived from it.
+  function campaignMetricChips(cam){
+    var d = derived(cam);
+    var chips = [
+      ['spend', fmtMoney(cam.spend)],
+      ['impr', fmtInt(cam.impressions)],
+      ['clicks', fmtInt(cam.clicks)],
+      ['CTR', fmtPct(d.ctr)],
+      ['reach', fmtInt(cam.reach)],
+      ['leads', fmtInt(cam.leads)],
+      ['CPC', fmtDec(d.cpc)],
+      ['CPM', fmtDec(d.cpm)]
+    ];
+    if(num(cam.leads)>0) chips.push(['CPL', fmtDec(d.cpl)]);
+    return chips.map(function(x){ return '<span class="chip"><b>'+x[1]+'</b> '+x[0]+'</span>'; }).join('');
+  }
   function campaignsPanelHtml(c){
-    var list = campaignsForMarket(c.id);
+    var all = campaignsForMarket(c.id);
+    var list = visibleCampaignsForMarket(c.id);
+    var hidden = all.length - list.length;
     var rows = list.map(function(cam){
       var m = campaignMetricsRow(cam);
-      return '<div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px dashed var(--line-soft); flex-wrap:wrap;">'
-        + '<div style="flex:1; min-width:160px;"><div style="font-size:12.5px; font-weight:600;">'+esc(cam.name)+'</div>'
-        + '<div style="font-size:11px; color:var(--faint);">'+(cam.liCampaignId?esc(cam.liCampaignId):'No LinkedIn campaign ID yet')+(m.source?' · '+(m.source==='sync'?'synced':'manual'):'')+'</div></div>'
-        + '<span class="chip"><b>'+fmtMoney(m.spend)+'</b> spend</span>'
-        + '<span class="chip"><b>'+fmtInt(m.leads)+'</b> leads</span>'
+      var state = campaignStateLabel(cam);
+      var meta = [];
+      if(cam.objective) meta.push(esc(cam.objective.replace(/_/g,' ').toLowerCase()));
+      if(cam.dailyBudget!=null) meta.push('budget '+fmtMoney(cam.dailyBudget)+'/day');
+      if(cam.runStart) meta.push('from '+fmtDate(cam.runStart)+(cam.runEnd?' to '+fmtDate(cam.runEnd):''));
+      return '<div style="padding:10px 0; border-bottom:1px dashed var(--line-soft);">'
+        + '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">'
+        + '<div style="flex:1; min-width:160px;">'
+        + '<div style="font-size:12.5px; font-weight:600; display:flex; align-items:center; gap:7px; flex-wrap:wrap;">'+esc(cam.name)
+        + '<span class="chip" style="'+(state.tone==='live'
+            ? 'background:rgba(52,199,123,.16); color:#5BD99A;'
+            : 'background:var(--line-soft); color:var(--faint);')+'">'
+        + (state.tone==='live'?'<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#34C77B;margin-right:5px;"></span>':'')
+        + esc(state.text)+'</span></div>'
+        + '<div style="font-size:11px; color:var(--faint);">'+(cam.liCampaignId?esc(cam.liCampaignId):'No LinkedIn campaign ID yet')+(m.source?' · '+(m.source==='sync'?'synced':'manual'):'')+(meta.length?' · '+meta.join(' · '):'')+'</div></div>'
         + '<button class="btn btn-sm log-metrics-btn" data-campaign="'+cam.id+'" data-campaign-name="'+esc(cam.name)+'">Log numbers</button>'
         + '<button class="btn btn-sm edit-campaign-btn" data-campaign="'+cam.id+'">Edit</button>'
+        + '</div>'
+        + '<div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;">'+campaignMetricChips(cam)+'</div>'
         + '</div>';
     }).join('');
+    var emptyMsg = all.length
+      ? 'No live campaigns for this market right now.'
+      : 'No campaigns yet for this market.';
     return '<div style="background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:13px 15px;">'
-      + '<div style="display:flex; justify-content:flex-end; margin-bottom:'+(rows?'8px':'0')+';">'
+      + '<div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:8px; flex-wrap:wrap;">'
+      + '<label style="display:flex; align-items:center; gap:6px; font-size:11.5px; color:var(--muted); cursor:pointer;">'
+      + '<input type="checkbox" class="toggle-all-campaigns"'+(showAllCampaigns?' checked':'')+' style="cursor:pointer;" />'
+      + 'Show non-live campaigns'+(hidden>0?' <span class="chip" style="background:var(--line-soft); color:var(--faint);">'+hidden+' hidden</span>':'')
+      + '</label>'
       + '<button class="btn btn-sm add-campaign-btn" data-market="'+c.id+'">+ Campaign</button>'
       + '</div>'
-      + (rows || '<div style="font-size:12px; color:var(--faint);">No campaigns yet for this market.</div>')
+      + (rows || '<div style="font-size:12px; color:var(--faint);">'+emptyMsg+'</div>')
       + '</div>';
   }
 
@@ -521,7 +585,7 @@
   }
 
   function tabsHtml(c, list, filtered){
-    var campaignCount = campaignsForMarket(c.id).length;
+    var campaignCount = visibleCampaignsForMarket(c.id).length;
     return '<div class="swiper tab-thumb-swiper" data-id="'+c.id+'">'
       + '<div class="swiper-wrapper">'
       + '<div class="swiper-slide"><button type="button" class="tab-pill">'+icon('target',13,'currentColor',1.8)+'Campaigns <span class="tab-pill-count">'+campaignCount+'</span></button></div>'
@@ -576,6 +640,11 @@
     document.querySelectorAll('.log-metrics-btn').forEach(function(el){ el.addEventListener('click', function(e){ e.stopPropagation(); openMetricsModal(Number(el.getAttribute('data-campaign')), el.getAttribute('data-campaign-name')); }); });
     document.querySelectorAll('.edit-campaign-btn').forEach(function(el){ el.addEventListener('click', function(e){ e.stopPropagation(); openCampaignModal(Number(el.getAttribute('data-campaign'))); }); });
     document.querySelectorAll('.add-campaign-btn').forEach(function(el){ el.addEventListener('click', function(e){ e.stopPropagation(); openCampaignModal(null, Number(el.getAttribute('data-market'))); }); });
+    document.querySelectorAll('.toggle-all-campaigns').forEach(function(el){ el.addEventListener('click', function(e){ e.stopPropagation(); }); el.addEventListener('change', function(){
+      showAllCampaigns = el.checked;
+      try { localStorage.setItem('showAllCampaigns', showAllCampaigns?'1':'0'); } catch(e){}
+      renderAll();
+    }); });
     initCountryTabSwipers();
   }
 

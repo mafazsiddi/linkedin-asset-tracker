@@ -1,6 +1,8 @@
 const { query } = require('../../lib/db');
 const { json, todayISO, addDaysISO, isISODate, withHandler } = require('../../lib/util');
 const { getCampaignDailyStatsRange, getAssetDailyStatsRange } = require('../../lib/linkedin');
+const { ensureSchema } = require('../../lib/migrate');
+const { importCreativesAsAssets, syncCampaignMetadata } = require('../../lib/importer');
 
 // How many trailing days each run re-fetches. Syncing only "today" (what this used to do) meant
 // any hour the job didn't run left a permanent hole in the month-to-date sums, and LinkedIn's own
@@ -41,6 +43,8 @@ module.exports = withHandler(async function handler(req, res) {
     if (authHeader !== `Bearer ${secret}`) return json(res, 401, { error: 'Unauthorized' });
   }
 
+  await ensureSchema();
+
   const { start, end } = syncWindow(req);
   const onlyCampaign = req.query && req.query.campaignId ? Number(req.query.campaignId) : null;
 
@@ -49,12 +53,35 @@ module.exports = withHandler(async function handler(req, res) {
     : await query('select * from campaigns where li_campaign_id is not null');
   const campaigns = campaignRows.rows;
 
+  const errors = [];
+
+  // Refresh campaign status/budget/schedule, then pull in any ads that exist in LinkedIn but
+  // aren't tracked yet. Both run before metrics are fetched so newly-imported ads get their
+  // numbers in the same pass rather than waiting an hour for the next one. Skipped with
+  // ?skipImport=1 for a metrics-only run.
+  let metadata = null;
+  let importResult = null;
+  if (!(req.query && req.query.skipImport)) {
+    try {
+      metadata = await syncCampaignMetadata(campaigns);
+      errors.push(...metadata.errors);
+    } catch (e) {
+      errors.push(`campaign metadata: ${e.message}`);
+    }
+    try {
+      importResult = await importCreativesAsAssets(campaigns);
+      errors.push(...importResult.errors);
+    } catch (e) {
+      errors.push(`ad import: ${e.message}`);
+    }
+  }
+
+  // Read assets AFTER the import so ads discovered this run get metrics immediately.
   const assetRows = onlyCampaign
     ? await query('select id, title, li_creative_id from assets where li_creative_id is not null and campaign_id = $1', [onlyCampaign])
     : await query('select id, title, li_creative_id from assets where li_creative_id is not null');
   const assets = assetRows.rows;
 
-  const errors = [];
   let campaignDays = 0;
   let assetDays = 0;
   let campaignsSynced = 0;
@@ -131,6 +158,9 @@ module.exports = withHandler(async function handler(req, res) {
     replace,
     campaignsConsidered: campaigns.length,
     campaignsSynced,
+    campaignMetadataUpdated: metadata ? metadata.updated : null,
+    adsImported: importResult ? importResult.imported : null,
+    adsRefreshed: importResult ? importResult.updated : null,
     campaignDaysWritten: campaignDays,
     campaignDaysRemoved,
     assetsConsidered: assets.length,
