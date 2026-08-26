@@ -3,6 +3,7 @@ const { json, methodNotAllowed, currentMonthRange, withHandler } = require('../.
 const { CAMPAIGN_SELECT } = require('../../lib/queries');
 const { backfillCampaign } = require('../../lib/backfill');
 const { listCampaignCreatives } = require('../../lib/linkedin');
+const { DEAD_STATUSES: DEAD_CREATIVE_STATUSES } = require('../../lib/importer');
 
 module.exports = withHandler(async function handler(req, res) {
   const id = Number(req.query.id);
@@ -28,7 +29,12 @@ module.exports = withHandler(async function handler(req, res) {
     );
     const takenBy = new Map(taken.map(t => [String(t.li_creative_id), t.title]));
     const creatives = await listCampaignCreatives(campaign);
-    return json(res, 200, creatives.map(c => Object.assign({}, c, {
+    // Same exclusion the importer applies — a picker offering 70 deleted ads is unusable.
+    // ?all=1 keeps the unfiltered list available for looking up a specific old ad.
+    const usable = req.query.all
+      ? creatives
+      : creatives.filter(c => !DEAD_CREATIVE_STATUSES.has(String(c.status || '').toUpperCase()));
+    return json(res, 200, usable.map(c => Object.assign({}, c, {
       linkedToAsset: takenBy.get(String(c.creativeId)) || null
     })));
   }
