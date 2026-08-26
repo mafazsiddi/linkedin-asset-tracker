@@ -1,6 +1,6 @@
 const { query } = require('../lib/db');
 const { json, methodNotAllowed, withHandler, currentMonthRange, todayISO, addDaysISO } = require('../lib/util');
-const { getCampaignDailyStatsRange } = require('../lib/linkedin');
+const { getCampaignDailyStatsRange, fetchCampaignMetadata, listCreativesForCampaigns } = require('../lib/linkedin');
 const { ensureSchema } = require('../lib/migrate');
 
 // One place to answer "why are the numbers wrong / why is nothing loading" without needing
@@ -123,6 +123,27 @@ module.exports = withHandler(async function handler(req, res) {
         };
       } catch (e) {
         out.linkedin.probe = { ran: true, ok: false, campaign: probeRows[0].name, date: day, error: e.message };
+      }
+      // The sync depends on three separate LinkedIn endpoints, and they fail independently — the
+      // creative and campaign ones were both silently retired in favour of account-scoped paths.
+      // Exercise each so a break is attributable instead of showing up as "nothing imported".
+      try {
+        const meta = await fetchCampaignMetadata([probeRows[0]]);
+        const m = meta[String(probeRows[0].li_campaign_id)];
+        out.linkedin.campaignMetadata = m
+          ? { ok: true, status: m.status, servingStatus: m.servingStatus, objective: m.objective }
+          : { ok: false, error: 'campaign not returned by the search finder' };
+      } catch (e) {
+        out.linkedin.campaignMetadata = { ok: false, error: e.message };
+      }
+      try {
+        const creatives = await listCreativesForCampaigns([probeRows[0]]);
+        out.linkedin.creatives = {
+          ok: true, count: creatives.length,
+          sample: creatives.slice(0, 3).map(c => ({ id: c.creativeId, name: c.name, type: c.type, status: c.status, isServing: c.isServing }))
+        };
+      } catch (e) {
+        out.linkedin.creatives = { ok: false, error: e.message };
       }
     }
   }
