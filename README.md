@@ -112,11 +112,25 @@ Existing assets are refreshed in place, never duplicated, and only the columns L
 (`li_status`, `li_is_serving`) are touched — locally edited fields like assignee, due date, notes
 and links are left alone. Run a metrics-only sync with `?skipImport=1`.
 
+**Ads that never ran are not imported.** `CANCELED` (LinkedIn's marker for a deleted ad) and
+`DRAFT` creatives are skipped — this account carries ~70 of them, all unnamed and with no
+impressions, and importing them buried the real assets. An ad cancelled *after* it was imported is
+pruned on the next sync, but only when nothing would be lost: the row must have been created by the
+importer, have no recorded metrics, and have no local edits. Hand-created assets are never pruned,
+and an ad with spend history is kept even once cancelled.
+
 Campaign status, objective, budget and schedule are mirrored too. That's what powers the
 **live-only campaign filter**: LinkedIn reports state two ways — `status` is what the advertiser
-set (`ACTIVE`, `PAUSED`, `ARCHIVED`…) and `servingStatuses` is whether it's delivering *right now*,
-since a campaign can be `ACTIVE` but held by billing or its date window. The UI treats
-`serving_status = RUNNING` as live and hides the rest behind a "Show non-live campaigns" toggle.
+set (`ACTIVE`, `PAUSED`, `ARCHIVED`…) and `servingStatuses` says whether it can actually deliver
+right now. The two disagree often: most of this account's `ACTIVE` campaigns sit on
+`CAMPAIGN_GROUP_STATUS_HOLD` because their parent campaign group is paused, and are not running at
+all.
+
+`RUNNABLE` is the only serving status that means delivering — **there is no `RUNNING` value**,
+which is worth knowing because matching on it silently marks every campaign as not live. Everything
+else is a stop or a hold (billing, budget, date window, group status). The UI shows only `RUNNABLE`
+campaigns, labels held ones with the reason rather than calling them "Active", and hides the rest
+behind a "Show non-live campaigns" toggle.
 
 > Market-level totals deliberately still sum **all** campaigns, not just live ones — spend in the
 > period is spend in the period, and filtering it would under-report the month.
