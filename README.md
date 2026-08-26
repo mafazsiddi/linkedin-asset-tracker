@@ -96,7 +96,7 @@ Only campaigns with a `li_campaign_id` set are included in the daily sync.
 | `/api/metrics/manual` | POST | manual stopgap entry for a campaign/day; sync overwrites it |
 | `/api/notifications` | GET | |
 | `/api/notifications/read` | POST | `{}` marks all read, `{"clear":true}` deletes all |
-| `/api/cron/sync` | GET/POST | LinkedIn sync, protected by `CRON_SECRET`. `?days=N`, `?start=&end=`, `?campaignId=N` |
+| `/api/cron/sync` | GET/POST | LinkedIn sync, protected by `CRON_SECRET`. `?days=N`, `?start=&end=`, `?campaignId=N`, `?replace=1` |
 | `/api/campaigns/:id?creatives=1` | GET | lists the real LinkedIn ads under a campaign, so an asset can be linked to one |
 | `/api/health` | GET | diagnostics — DB reachability, schema completeness, token validity, last sync |
 | `/api/auth/linkedin/start`, `/callback` | GET | OAuth flow, inert until LinkedIn app is approved |
@@ -141,3 +141,24 @@ in the UI (an empty table):
 `sync.last.error` carries the last run's failure text. A run that partially fails now reports
 `status: "partial"` and still syncs every campaign that worked, rather than aborting on the first
 bad one.
+
+### Re-fetching a range authoritatively
+
+A normal sync upserts, so it can only correct days LinkedIn returns data for — a wrong row for a
+day a campaign wasn't serving would survive re-syncing forever. `?replace=1` drops the stored rows
+in the window and rebuilds them from what LinkedIn returns:
+
+```
+curl -H "Authorization: Bearer $CRON_SECRET" \
+  "https://<your-app>.vercel.app/api/cron/sync?start=2026-08-20&end=2026-08-26&replace=1"
+```
+
+The delete happens per campaign and only *after* that campaign's fetch has succeeded, so a failed
+API call can never destroy stored data. Rows outside the window are untouched. Use it when stored
+data is known-bad; the scheduled runs deliberately don't, so a LinkedIn outage can't wipe history.
+
+> **`LINKEDIN_MODE` must be `live` in the deployed environment**, not just in `.env`. Vercel bakes
+> env vars in at deploy time, so changing it requires a redeploy. If it resolves to `mock` the sync
+> will happily overwrite real metrics with generated numbers — check `linkedin.mode` on
+> `/api/health`, and `/api/health?probe=1` to make one read-only live call and confirm the
+> credentials actually work.

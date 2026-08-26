@@ -62,9 +62,25 @@ module.exports = withHandler(async function handler(req, res) {
   // One campaign failing (a deleted LinkedIn campaign, a permissions gap on a single ad account)
   // used to throw straight out of the loop and abandon every remaining campaign, so a single bad
   // row zeroed the whole run. Each campaign is isolated so the rest still get their data.
+  // ?replace=1 makes the window authoritative: rows already stored for these dates are dropped and
+  // rebuilt from what LinkedIn returns. A plain upsert can only correct days LinkedIn *has* data
+  // for, so a wrong row for a day a campaign wasn't serving would survive re-syncing forever.
+  // Deliberately opt-in, and the delete happens only after that campaign's fetch has succeeded, so
+  // a failed call can never destroy stored data.
+  const replace = Boolean(req.query && req.query.replace);
+  let campaignDaysRemoved = 0;
+  let assetDaysRemoved = 0;
+
   for (const campaign of campaigns) {
     try {
       const byDate = await getCampaignDailyStatsRange(campaign, start, end);
+      if (replace) {
+        const del = await query(
+          'delete from campaign_daily_metrics where campaign_id = $1 and metric_date >= $2 and metric_date <= $3',
+          [campaign.id, start, end]
+        );
+        campaignDaysRemoved += del.rowCount || 0;
+      }
       for (const [date, stats] of Object.entries(byDate)) {
         await query(UPSERT_CAMPAIGN, [
           campaign.id, date, stats.spend, stats.impressions, stats.clicks, stats.reach, stats.leads
@@ -80,6 +96,14 @@ module.exports = withHandler(async function handler(req, res) {
   if (assets.length) {
     try {
       const byCreative = await getAssetDailyStatsRange(assets, start, end);
+      if (replace) {
+        const del = await query(
+          `delete from asset_daily_metrics
+           where asset_id = any($1::int[]) and metric_date >= $2 and metric_date <= $3`,
+          [assets.map(a => a.id), start, end]
+        );
+        assetDaysRemoved += del.rowCount || 0;
+      }
       for (const asset of assets) {
         const byDate = byCreative[asset.li_creative_id];
         if (!byDate) continue; // no LinkedIn data for this ad in this window (e.g. not serving)
@@ -104,11 +128,14 @@ module.exports = withHandler(async function handler(req, res) {
   return json(res, errors.length && !campaignsSynced ? 500 : 200, {
     status,
     window: { start, end },
+    replace,
     campaignsConsidered: campaigns.length,
     campaignsSynced,
     campaignDaysWritten: campaignDays,
+    campaignDaysRemoved,
     assetsConsidered: assets.length,
     assetDaysWritten: assetDays,
+    assetDaysRemoved,
     // Surfaced rather than swallowed: a run that quietly wrote nothing is exactly the failure
     // mode that kept getting noticed only from the UI showing stale numbers.
     errors
