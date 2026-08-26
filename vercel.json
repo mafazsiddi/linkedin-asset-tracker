@@ -4,5 +4,8 @@
   ],
   "rewrites": [
     { "source": "/api/notifications/read", "destination": "/api/notifications" }
-  ]
+  ],
+  "functions": {
+    "api/cron/sync.js": { "maxDuration": 60 }
+  }
 }
