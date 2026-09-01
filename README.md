@@ -281,6 +281,80 @@ window makes the stored data self-correcting.
 Adding a campaign with a LinkedIn ID (or attaching one later) triggers an immediate month-to-date
 backfill, so it shows real numbers straight away instead of waiting for the next scheduled run.
 
+## Two ways the stored numbers went wrong
+
+Both of these produced totals that looked entirely plausible in the UI and only showed up when a
+month was compared against Campaign Manager line by line. Both are now prevented in code; the
+`scratchpad` audit approach below is how to re-check at any time.
+
+### 1. Mock data written into production
+
+`LINKEDIN_MODE` defaults to `mock`. An unset, misspelled, or not-yet-redeployed variable therefore
+turns the scheduled sync into a **fake-data generator pointed at the production database** — and
+because it upserts, it overwrites real days and invents days LinkedIn never reported. A week of
+generated rows sat in August unnoticed.
+
+What made it invisible was that generated rows were stored with `source = 'sync'`, exactly like
+real ones. Nothing downstream could tell them apart. Two changes fix that:
+
+- Generated rows are now stored with **`source = 'mock'`**.
+- The sync **refuses to run in mock mode** against a database that already contains real (`sync`)
+  rows, returning `409 refused`. Deliberate mock generation needs `ALLOW_MOCK_WRITES=1`.
+
+The fingerprint, if you ever need to spot it by eye: `mockDailyStats` seeds on
+`hash(campaignId + dateISO)`, and consecutive dates shift that hash by exactly 1 — so mock rows
+show **impressions incrementing by exactly 1 per day with spend and clicks frozen**:
+
+```
+2026-08-20   spend 1742   impr 2687   clicks 26
+2026-08-21   spend 1742   impr 2688   clicks 26
+2026-08-22   spend 1742   impr 2689   clicks 26
+```
+
+Negative spend or clicks are the same generator's older signed-shift bug. Real LinkedIn data never
+looks like either; the upserts now also clamp every metric at zero on write, not just on read.
+
+### 2. `approximateMemberReach` vanishes on long ranges
+
+LinkedIn stops returning `approximateMemberReach` once the requested range gets long. A 31-day
+query returns reach on every row; a 93-day query returns **identical impressions and clicks with
+reach silently absent** — and `Number(undefined || 0)` turns that into a confident `0`. Nothing in
+the response indicates it happened, so a full-history backfill wiped reach from every row it wrote
+while reporting `status: "ok"`.
+
+Every analytics request is therefore chunked into `MAX_RANGE_DAYS` (31) windows and merged. Chunks
+are per-day disjoint, so merging cannot double-count.
+
+> **Reach is a sum of daily approximate reach, not unique reach.** Someone served the ad on three
+> days counts three times, so this figure runs higher than the deduplicated reach Campaign Manager
+> shows for the same period. Spend, impressions, clicks and leads are additive and do match.
+
+### Re-auditing at any time
+
+```
+node scripts/audit-metrics.js 2026-08-01 2026-08-31
+```
+
+For each campaign it fetches the range live from LinkedIn, sums the same range out of
+`campaign_daily_metrics`, and prints any disagreement — plus a count of negative rows and rows
+tagged `mock`. Read-only, exits non-zero on a mismatch so it can gate a deploy. Requires
+`LINKEDIN_MODE=live`; it refuses to run otherwise, since comparing stored data against generated
+numbers proves nothing.
+
+Current state — all 22 campaigns match exactly:
+
+```
+linkedin : spend=664439  impressions=247656  clicks=2127  reach=128858  leads=8
+stored   : spend=664439  impressions=247656  clicks=2127  reach=128858  leads=8
+```
+
+When it reports a mismatch, rebuild that window authoritatively:
+
+```
+curl -H "Authorization: Bearer $CRON_SECRET" \
+  ".../api/cron/sync?start=2026-08-01&end=2026-08-31&replace=1&skipImport=1"
+```
+
 ## Troubleshooting
 
 **Start with `/api/health`.** It distinguishes the failure modes that otherwise all look identical

@@ -1,6 +1,6 @@
 const { query } = require('../../lib/db');
 const { json, todayISO, addDaysISO, isISODate, withHandler } = require('../../lib/util');
-const { getCampaignDailyStatsRange, getAssetDailyStatsRange } = require('../../lib/linkedin');
+const { getCampaignDailyStatsRange, getAssetDailyStatsRange, isLiveMode } = require('../../lib/linkedin');
 const { ensureSchema } = require('../../lib/migrate');
 const { importCreativesAsAssets, syncCampaignMetadata } = require('../../lib/importer');
 
@@ -11,17 +11,43 @@ const { importCreativesAsAssets, syncCampaignMetadata } = require('../../lib/imp
 // or a restated day is corrected on the next pass instead of being wrong until someone notices.
 const DEFAULT_WINDOW_DAYS = Number(process.env.SYNC_WINDOW_DAYS || 7);
 
+// $8 is the source: 'sync' for numbers that came from LinkedIn, 'mock' for generated ones.
+//
+// These used to be hardcoded to 'sync' in both modes, which is how ~150 generated rows ended up in
+// production looking exactly like real data — there was no column that could tell them apart, and
+// they only surfaced when a month's totals were compared against Campaign Manager by hand.
+// Every parameter is cast explicitly. Without the casts an untyped `greatest($3, 0)` makes
+// Postgres infer $3 from the integer literal `0`, so a spend of "10278.24" is rejected with
+// "invalid input syntax for type integer" — and since the ?replace=1 delete runs before the
+// insert, that failure empties the window instead of rebuilding it. The counter metrics are
+// rounded rather than cast straight to int for the same reason: LinkedIn occasionally returns
+// them fractional, and `'1.0'::int` is an error, not a truncation.
+const CLAMPED_VALUES = `
+  $1, $2,
+  greatest($3::numeric, 0),
+  greatest(round($4::numeric)::int, 0),
+  greatest(round($5::numeric)::int, 0),
+  greatest(round($6::numeric)::int, 0),
+  greatest(round($7::numeric)::int, 0),
+  $8`;
+
+const CLAMPED_UPDATE = `
+  spend = greatest($3::numeric, 0),
+  impressions = greatest(round($4::numeric)::int, 0),
+  clicks = greatest(round($5::numeric)::int, 0),
+  reach = greatest(round($6::numeric)::int, 0),
+  leads = greatest(round($7::numeric)::int, 0),
+  source = $8, updated_at = now()`;
+
 const UPSERT_CAMPAIGN = `
   insert into campaign_daily_metrics (campaign_id, metric_date, spend, impressions, clicks, reach, leads, source)
-  values ($1,$2,$3,$4,$5,$6,$7,'sync')
-  on conflict (campaign_id, metric_date)
-  do update set spend=$3, impressions=$4, clicks=$5, reach=$6, leads=$7, source='sync', updated_at=now()`;
+  values (${CLAMPED_VALUES})
+  on conflict (campaign_id, metric_date) do update set ${CLAMPED_UPDATE}`;
 
 const UPSERT_ASSET = `
   insert into asset_daily_metrics (asset_id, metric_date, spend, impressions, clicks, reach, leads, source)
-  values ($1,$2,$3,$4,$5,$6,$7,'sync')
-  on conflict (asset_id, metric_date)
-  do update set spend=$3, impressions=$4, clicks=$5, reach=$6, leads=$7, source='sync', updated_at=now()`;
+  values (${CLAMPED_VALUES})
+  on conflict (asset_id, metric_date) do update set ${CLAMPED_UPDATE}`;
 
 // Resolves the window to sync. Defaults to the trailing DEFAULT_WINDOW_DAYS, but an explicit
 // ?start=&end= lets a newly-added campaign be backfilled over its real reporting period.
@@ -44,6 +70,36 @@ module.exports = withHandler(async function handler(req, res) {
   }
 
   await ensureSchema();
+
+  // Refuse to write generated numbers into a database that holds real ones.
+  //
+  // LINKEDIN_MODE defaults to "mock", so an env var that is unset, misspelled, or simply not
+  // redeployed silently turns the scheduled sync into a fake-data generator pointed at production
+  // — and because it upserts, it overwrites real days and invents days LinkedIn never reported.
+  // That is exactly what happened here: a week of generated rows landed in August and stayed,
+  // because nothing downstream could tell them from real ones.
+  //
+  // Mock mode remains fully usable against an empty database (which is what it is for); it just
+  // has to be opted into once there is real data present, via ALLOW_MOCK_WRITES=1.
+  const live = isLiveMode();
+  const source = live ? 'sync' : 'mock';
+  if (!live && !process.env.ALLOW_MOCK_WRITES) {
+    const { rows: [{ n }] } = await query(
+      `select count(*) as n from campaign_daily_metrics where source = 'sync'`
+    );
+    if (Number(n) > 0) {
+      return json(res, 409, {
+        status: 'refused',
+        error:
+          `LINKEDIN_MODE is "${process.env.LINKEDIN_MODE || 'mock'}" but this database already holds ` +
+          `${n} rows of real LinkedIn data. Refusing to overwrite them with generated numbers.`,
+        hint:
+          'Set LINKEDIN_MODE=live and redeploy (Vercel bakes env vars in at deploy time, so ' +
+          'changing the variable alone is not enough). To generate mock data deliberately, set ' +
+          'ALLOW_MOCK_WRITES=1.'
+      });
+    }
+  }
 
   const { start, end } = syncWindow(req);
   const onlyCampaign = req.query && req.query.campaignId ? Number(req.query.campaignId) : null;
@@ -110,7 +166,7 @@ module.exports = withHandler(async function handler(req, res) {
       }
       for (const [date, stats] of Object.entries(byDate)) {
         await query(UPSERT_CAMPAIGN, [
-          campaign.id, date, stats.spend, stats.impressions, stats.clicks, stats.reach, stats.leads
+          campaign.id, date, stats.spend, stats.impressions, stats.clicks, stats.reach, stats.leads, source
         ]);
         campaignDays++;
       }
@@ -136,7 +192,7 @@ module.exports = withHandler(async function handler(req, res) {
         if (!byDate) continue; // no LinkedIn data for this ad in this window (e.g. not serving)
         for (const [date, stats] of Object.entries(byDate)) {
           await query(UPSERT_ASSET, [
-            asset.id, date, stats.spend, stats.impressions, stats.clicks, stats.reach, stats.leads
+            asset.id, date, stats.spend, stats.impressions, stats.clicks, stats.reach, stats.leads, source
           ]);
           assetDays++;
         }

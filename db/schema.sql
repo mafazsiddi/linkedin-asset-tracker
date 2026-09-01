@@ -72,7 +72,7 @@ create table if not exists campaign_daily_metrics (
   clicks integer not null default 0,
   reach integer not null default 0,
   leads integer not null default 0,
-  source text not null default 'manual' check (source in ('sync', 'manual')),
+  source text not null default 'manual' check (source in ('sync', 'manual', 'mock')),
   updated_at timestamptz not null default now(),
   unique (campaign_id, metric_date)
 );
@@ -89,7 +89,7 @@ create table if not exists asset_daily_metrics (
   clicks integer not null default 0,
   reach integer not null default 0,
   leads integer not null default 0,
-  source text not null default 'manual' check (source in ('sync', 'manual')),
+  source text not null default 'manual' check (source in ('sync', 'manual', 'mock')),
   updated_at timestamptz not null default now(),
   unique (asset_id, metric_date)
 );
