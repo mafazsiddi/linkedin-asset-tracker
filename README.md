@@ -322,7 +322,31 @@ show **impressions incrementing by exactly 1 per day with spend and clicks froze
 Negative spend or clicks are the same generator's older signed-shift bug. Real LinkedIn data never
 looks like either; the upserts now also clamp every metric at zero on write, not just on read.
 
-### 2. `approximateMemberReach` vanishes on long ranges
+### 2. Half the ads were never imported, because the creatives finder is cursor-paged
+
+One `creatives` call covering all 22 campaigns returned **102 creatives belonging to just 4 of
+them**. The other 18 campaigns looked like they had no ads at all, so their ads were never
+imported and never got ad-level metrics — a creative running in four ad sets showed as three.
+Asking for the campaigns one at a time returned their ads correctly, which is what gave it away.
+
+LinkedIn uses two incompatible pagination schemes on the endpoints this app touches, and picking
+the wrong one fails silently in a different way each time:
+
+| Endpoint | Scheme | Behaviour if handled wrongly |
+|---|---|---|
+| `/adAccounts/{id}/creatives` | **cursor** — `pageSize` + `pageToken`, next token in `metadata.nextPageToken` | caps `count` at 100 and **ignores `start`**, so offset paging re-fetches page one forever |
+| `adAnalytics` | **none** — honours a large `count` in one response | **ignores `start`**; `start=100` returns the same rows as `start=0`, so offset paging loops on duplicates |
+| `adAccounts/{id}/adCampaigns` (search) | none needed — batched 20 ids at a time | — |
+
+So creatives are cursor-paged to exhaustion, while analytics is fetched in a single request with a
+large `count`. Because that request cannot be paged, `linkedInGetUnpaged` treats a response that
+exactly fills the requested count as an **error** rather than returning quietly-truncated data —
+callers stay well under it by chunking dates (see below) and batching ids.
+
+Fixing this imported 11 previously invisible ads (140 → 151) and left every campaign with at least
+one ad.
+
+### 3. `approximateMemberReach` vanishes on long ranges
 
 LinkedIn stops returning `approximateMemberReach` once the requested range gets long. A 31-day
 query returns reach on every row; a 93-day query returns **identical impressions and clicks with
@@ -333,9 +357,31 @@ while reporting `status: "ok"`.
 Every analytics request is therefore chunked into `MAX_RANGE_DAYS` (31) windows and merged. Chunks
 are per-day disjoint, so merging cannot double-count.
 
-> **Reach is a sum of daily approximate reach, not unique reach.** Someone served the ad on three
-> days counts three times, so this figure runs higher than the deduplicated reach Campaign Manager
-> shows for the same period. Spend, impressions, clicks and leads are additive and do match.
+> **Reach is not shown in the UI.** LinkedIn reports `approximateMemberReach` per day, so summing a
+> range counts the same member once per day they were served — it is not the unique reach Campaign
+> Manager shows, and it tracked impressions at ~89% (correlation 0.74) anyway, so it contributed a
+> number that looked authoritative while saying nothing impressions didn't. It is still fetched and
+> stored, so it can be surfaced again without a backfill. Spend, impressions, clicks and leads are
+> additive and do match Campaign Manager.
+
+## Leads only appear where leads can exist
+
+`oneClickLeads` counts lead-form submissions, which only a `LEAD_GENERATION` campaign has. This
+account runs 12 lead-gen, 9 website-conversion and 1 website-visit ad sets, so a leads column
+showed `0` against two thirds of the live ones — which reads as broken tracking rather than as
+"this objective doesn't produce leads".
+
+Leads and CPL are therefore shown only where the objective is `LEAD_GENERATION`:
+
+- campaign chips include `leads`/`CPL` only for lead-gen ad sets;
+- the All-assets table shows a Leads column only when something in view is lead-gen, and prints
+  `—` rather than `0` on rows that aren't;
+- the home-page Leads tile totals lead-gen ad sets only, and disappears if there are none;
+- a market's header chip falls back to impressions when that market runs no lead-gen campaigns;
+- the manual-entry modal only asks for leads on a lead-gen campaign.
+
+All 70 recorded leads sit in 6 ad sets, all of them lead-gen — so nothing is hidden that had a
+number against it.
 
 ### Re-auditing at any time
 

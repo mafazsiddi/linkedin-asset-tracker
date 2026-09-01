@@ -624,17 +624,25 @@
   function perfPanel(list, marketId){
     var t=campaignTotalsFor(marketId);
     var head='<div class="section-title" style="margin:0 0 10px;">'+icon('chart',14,'var(--muted)',1.8)+' Ad performance <span style="color:var(--faint); font-weight:600; text-transform:none; letter-spacing:0;">· '+reportingPeriodLabel()+' · '+list.length+' assets</span></div>';
-    var grid=metricList(t).map(function(x){ return '<div class="perf-tile"><div class="l">'+x[0]+'</div><div class="v">'+x[1]+'</div></div>'; }).join('');
+    var grid=metricList(t, marketHasLeadGen(marketId)).map(function(x){ return '<div class="perf-tile"><div class="l">'+x[0]+'</div><div class="v">'+x[1]+'</div></div>'; }).join('');
     return '<div style="background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:13px 15px; margin-bottom:13px;">'+head
       + '<div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(96px,1fr)); gap:8px;">'+grid+'</div></div>';
   }
   function renderOverall(){
-    var heads=['Country','Cost','Clicks','Impr','CPC','Reach','Leads'];
+    // The leads column appears only if at least one market runs a lead-gen campaign, so it isn't a
+    // column of zeros; headers are derived from the same call that builds the cells so they can't
+    // drift apart.
+    var anyLeadGen = countries.some(function(c){ return marketHasLeadGen(c.id); });
+    // Acronyms have to be spelt out rather than title-cased, or CPC renders as "Cpc".
+    var HEADER_LABEL = { cost:'Cost', clicks:'Clicks', impr:'Impr', cpc:'CPC', leads:'Leads' };
+    var heads=['Country'].concat(metricList({spend:0,clicks:0,impressions:0,leads:0}, anyLeadGen).map(function(x){
+      return HEADER_LABEL[x[0]] || x[0];
+    }));
     var rows=countries.map(function(c){
       var list=assets.filter(function(a){return a.marketId===c.id;});
       var t=campaignTotalsFor(c.id);
       var accent=accentFor(c.country);
-      var cells=metricList(t).map(function(x){ return '<td class="num">'+x[1]+'</td>'; }).join('');
+      var cells=metricList(t, anyLeadGen).map(function(x){ return '<td class="num">'+x[1]+'</td>'; }).join('');
       return '<tr>'
         + '<td style="white-space:nowrap;"><span class="meta"><span class="dot" style="background:'+accent+';"></span>'+flagFor(c.country)+' <b style="font-weight:600;">'+esc(c.country)+'</b> <span style="color:var(--faint); font-weight:600; margin-left:2px;">'+list.length+'</span></span></td>'
         + cells + '</tr>';
@@ -645,7 +653,7 @@
       + '<div class="scroll-x"><table class="data-table" style="min-width:640px;">'
       + '<thead><tr>'
       + heads.map(function(h,i){ return '<th'+(i===0?'':' class="num"')+'>'+h+'</th>'; }).join('')
-      + '</tr></thead><tbody>'+(rows||'<tr><td colspan="7" class="empty">No countries yet</td></tr>')+'</tbody></table></div>'
+      + '</tr></thead><tbody>'+(rows||'<tr><td colspan="'+heads.length+'" class="empty">No countries yet</td></tr>')+'</tbody></table></div>'
       + '</div>';
   }
 
@@ -679,14 +687,22 @@
     var d=derived(t);
     var linked=all.filter(function(c){return c.liCampaignId;}).length;
 
+    var leadGen = all.filter(isLeadGenCampaign);
     var tiles=[
       bigMetricTile('Total spend', fmtMoney(t.spend), reportingPeriodLabel(), 'var(--emerald)'),
-      bigMetricTile('Impressions', fmtInt(t.impressions), fmtInt(t.reach)+' reach'),
-      bigMetricTile('Clicks', fmtInt(t.clicks), fmtPct(d.ctr)+' CTR'),
-      bigMetricTile('Leads', fmtInt(t.leads), num(t.leads)>0?fmtDec(d.cpl)+' CPL':'no leads yet', 'var(--indigo)'),
-      bigMetricTile('CPC', fmtDec(d.cpc), fmtDec(d.cpm)+' CPM'),
-      bigMetricTile('Live ad sets', live.length, all.length+' total · '+linked+' linked', live.length?'var(--emerald)':'var(--muted)')
-    ].join('');
+      bigMetricTile('Impressions', fmtInt(t.impressions), fmtPct(d.ctr)+' CTR'),
+      bigMetricTile('Clicks', fmtInt(t.clicks), fmtDec(d.cpc)+' CPC'),
+      bigMetricTile('CPM', fmtDec(d.cpm), 'per 1,000 impressions')
+    ];
+    // Only meaningful if something in the account can actually generate a lead.
+    if(leadGen.length){
+      var lt = totalsFor(leadGen);
+      var ld = derived(lt);
+      tiles.push(bigMetricTile('Leads', fmtInt(lt.leads),
+        num(lt.leads)>0 ? fmtDec(ld.cpl)+' CPL' : 'across '+leadGen.length+' lead-gen ad sets', 'var(--indigo)'));
+    }
+    tiles.push(bigMetricTile('Live ad sets', live.length, all.length+' total · '+linked+' linked', live.length?'var(--emerald)':'var(--muted)'));
+    tiles = tiles.join('');
 
     // Headline totals only. The per-ad-set breakdown that used to sit here duplicated the campaigns
     // panel inside each country block, which is where you act on a single ad set anyway.
@@ -733,9 +749,29 @@
     el.innerHTML='<div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">'+bits.join('')+'</div>';
   }
 
-  function metricList(o){
+  // Leads are only reported for LEAD_GENERATION campaigns — LinkedIn's `oneClickLeads` counts
+  // lead-form submissions, which a website-conversion campaign has none of by construction. Showing
+  // "0 leads" against two thirds of this account's ad sets reads as a tracking failure rather than
+  // as "this objective doesn't produce leads", so the column is shown only where it can be non-zero.
+  var LEAD_GEN = 'LEAD_GENERATION';
+  function campaignById(id){ return campaigns.find(function(c){ return c.id===id; }) || null; }
+  function isLeadGenCampaign(c){ return Boolean(c && c.objective===LEAD_GEN); }
+  function marketHasLeadGen(marketId){ return campaignsForMarket(marketId).some(isLeadGenCampaign); }
+  // A merged creative can span objectives; if any placement is lead-gen the number means something.
+  function assetHasLeadGen(a){
+    var parts = a && a.parts ? a.parts : [a];
+    return parts.some(function(p){ return isLeadGenCampaign(campaignById(p.campaignId)); });
+  }
+
+  // Reach is deliberately absent. LinkedIn reports `approximateMemberReach` per day, so summing a
+  // range counts the same member once per day they were served — it is not the unique reach
+  // Campaign Manager shows, and it tracked impressions at ~89% anyway, so it added a number that
+  // looked authoritative while saying nothing impressions didn't. Still collected and stored.
+  function metricList(o, showLeads){
     var d=derived(o);
-    return [['cost',fmtMoney(o.spend)],['clicks',fmtInt(o.clicks)],['impr',fmtInt(o.impressions)],['cpc',fmtDec(d.cpc)],['reach',fmtInt(o.reach)],['leads',fmtInt(o.leads)]];
+    var out=[['cost',fmtMoney(o.spend)],['clicks',fmtInt(o.clicks)],['impr',fmtInt(o.impressions)],['cpc',fmtDec(d.cpc)]];
+    if(showLeads) out.push(['leads',fmtInt(o.leads)]);
+    return out;
   }
   function metricChips(a){
     // A combined figure has to announce itself. Otherwise a creative running in three ad sets shows
@@ -743,7 +779,7 @@
     var combined = a && a.merged;
     return '<div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:10px; padding-top:10px; border-top:1px dashed var(--line);">'
       + (combined?'<span class="chip" style="background:var(--violet-tint); color:#C9BFFF;">'+icon('stack',11,'currentColor',1.8)+'combined</span>':'')
-      + metricList(a).map(function(x){ return '<span class="chip"><b>'+x[1]+'</b> '+x[0]+'</span>'; }).join('') + '</div>';
+      + metricList(a, assetHasLeadGen(a)).map(function(x){ return '<span class="chip"><b>'+x[1]+'</b> '+x[0]+'</span>'; }).join('') + '</div>';
   }
 
   // The breakdown behind a merged creative, one line per ad set.
@@ -899,7 +935,8 @@
   function campaignMetricsRow(c){
     return { spend:c.spend, impressions:c.impressions, clicks:c.clicks, reach:c.reach, leads:c.leads, source:c.metricsSource };
   }
-  // Everything LinkedIn gives us per campaign, plus the ratios derived from it.
+  // Everything LinkedIn reports for this campaign that means something for its objective.
+  // Leads and CPL only appear on lead-gen campaigns; reach is omitted entirely (see metricList).
   function campaignMetricChips(cam){
     var d = derived(cam);
     var chips = [
@@ -907,12 +944,13 @@
       ['impr', fmtInt(cam.impressions)],
       ['clicks', fmtInt(cam.clicks)],
       ['CTR', fmtPct(d.ctr)],
-      ['reach', fmtInt(cam.reach)],
-      ['leads', fmtInt(cam.leads)],
       ['CPC', fmtDec(d.cpc)],
       ['CPM', fmtDec(d.cpm)]
     ];
-    if(num(cam.leads)>0) chips.push(['CPL', fmtDec(d.cpl)]);
+    if(isLeadGenCampaign(cam)){
+      chips.push(['leads', fmtInt(cam.leads)]);
+      if(num(cam.leads)>0) chips.push(['CPL', fmtDec(d.cpl)]);
+    }
     return chips.map(function(x){ return '<span class="chip"><b>'+x[1]+'</b> '+x[0]+'</span>'; }).join('');
   }
   // ---- which companies have seen this ad set ----
@@ -1134,7 +1172,9 @@
       + '<div style="display:flex; gap:6px; flex-wrap:wrap; flex:1;">'
       + '<span class="chip"><b>'+mergeAssets(list).length+'</b> assets</span>'
       + '<span class="chip" style="background:var(--emerald-tint); color:#6EE7C0;">'+icon('dollar',12,'currentColor',1.8)+'<b>'+fmtMoney(t.spend)+'</b></span>'
-      + '<span class="chip" style="background:var(--indigo-tint); color:#AAB2FF;">'+icon('magnet',12,'currentColor',1.8)+'<b>'+fmtInt(t.leads)+'</b> leads</span>'
+      + (marketHasLeadGen(c.id)
+          ? '<span class="chip" style="background:var(--indigo-tint); color:#AAB2FF;">'+icon('magnet',12,'currentColor',1.8)+'<b>'+fmtInt(t.leads)+'</b> leads</span>'
+          : '<span class="chip" style="background:var(--indigo-tint); color:#AAB2FF;">'+icon('chart',12,'currentColor',1.8)+'<b>'+fmtInt(t.impressions)+'</b> impr</span>')
       + '<span class="chip" style="background:var(--sky-tint); color:#7FD0F5;">'+icon('send',12,'currentColor',1.8)+'<b>'+live+'</b> live</span>'
       + (overdue?'<span class="chip" style="background:var(--danger-tint); color:var(--danger);">'+icon('clock',12,'currentColor',1.8)+'<b>'+overdue+'</b> overdue</span>':'')
       + '</div>'
@@ -1229,6 +1269,7 @@
 
   function renderTableView(){
     var filtered=mergeAssets(assets.filter(matchesFilter));
+    var anyLeadGen=filtered.some(assetHasLeadGen);
     var rows=filtered.map(function(a){
       var col=STATUS_COLOR[a.status]||STATUS_COLOR["Requested"];
       var overdue=isOverdue(a); var d=derived(a);
@@ -1251,10 +1292,13 @@
         + '<td class="num">'+fmtInt(a.clicks)+'</td>'
         + '<td class="num">'+fmtPct(d.ctr)+'</td>'
         + '<td class="num">'+fmtDec(d.cpc)+'</td>'
-        + '<td class="num">'+fmtInt(a.leads)+'</td>'
+        + (anyLeadGen?'<td class="num">'+(assetHasLeadGen(a)?fmtInt(a.leads):'<span style="color:var(--faint);">—</span>')+'</td>':'')
         + '</tr>';
     }).join('');
-    var headers=[['Country',0],['Title',0],['Type',0],['Status',0],['Assigned',0],['Due',0],['Spend',1],['Impr',1],['Clicks',1],['CTR',1],['CPC',1],['Leads',1]];
+    var headers=[['Country',0],['Title',0],['Type',0],['Status',0],['Assigned',0],['Due',0],['Spend',1],['Impr',1],['Clicks',1],['CTR',1],['CPC',1]];
+    // An em dash rather than 0 on non-lead-gen rows: the ad set can't produce leads, so 0 would be
+    // reporting an outcome where there is no outcome to report.
+    if(anyLeadGen) headers.push(['Leads',1]);
     var mergedCount = filtered.filter(function(g){return g.merged;}).length;
     document.getElementById('table-view').innerHTML =
       '<div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px;">'
@@ -1268,7 +1312,7 @@
       + '<table class="data-table" style="min-width:980px;">'
       + '<thead><tr>'
       + headers.map(function(h){ return '<th'+(h[1]?' class="num"':'')+'>'+h[0]+'</th>'; }).join('')
-      + '</tr></thead><tbody>'+(rows||'<tr><td colspan="12" class="empty">No assets match these filters</td></tr>')+'</tbody></table></div>';
+      + '</tr></thead><tbody>'+(rows||'<tr><td colspan="'+headers.length+'" class="empty">No assets match these filters</td></tr>')+'</tbody></table></div>';
     var tm=document.getElementById('table-merge-filter');
     if(tm){ tm.innerHTML=mergeToggleHtml(); bindMergeToggle(tm); }
     document.querySelectorAll('#table-view .table-row').forEach(function(el){ el.addEventListener('click', function(){ openAssetModal(Number(el.getAttribute('data-id'))); }); });
@@ -1705,19 +1749,22 @@
   }
 
   function openMetricsModal(campaignId, campaignName){
+    // Leads are only offered for lead-gen campaigns, matching where they're displayed. Reach isn't
+    // asked for at all — it isn't shown anywhere, so collecting it by hand would be busywork.
+    var leadGen = isLeadGenCampaign(campaignById(campaignId));
     var body = '<div style="font-size:12px; color:var(--muted); margin-bottom:10px;">Logs a manual entry for <b>'+esc(campaignName)+'</b> — the next automatic sync will overwrite this day\'s numbers.</div>'
       + field('Date','<input id="mm-date" type="date" value="'+isoToday()+'" />')
       + '<div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px;">'+field('Spend (₹)','<input id="mm-spend" type="number" min="0" step="0.01" value="0" />')+field('Impressions','<input id="mm-impressions" type="number" min="0" step="1" value="0" />')+field('Clicks','<input id="mm-clicks" type="number" min="0" step="1" value="0" />')+'</div>'
-      + '<div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">'+field('Reach','<input id="mm-reach" type="number" min="0" step="1" value="0" />')+field('Leads','<input id="mm-leads" type="number" min="0" step="1" value="0" />')+'</div>';
+      + (leadGen ? field('Leads','<input id="mm-leads" type="number" min="0" step="1" value="0" />') : '');
     showModal('Log metrics', body, async function(){
+      var leadsEl = document.getElementById('mm-leads');
       await api('/api/metrics/manual', { method:'POST', body: JSON.stringify({
         campaignId: campaignId,
         date: document.getElementById('mm-date').value,
         spend: num(document.getElementById('mm-spend').value),
         impressions: num(document.getElementById('mm-impressions').value),
         clicks: num(document.getElementById('mm-clicks').value),
-        reach: num(document.getElementById('mm-reach').value),
-        leads: num(document.getElementById('mm-leads').value)
+        leads: leadsEl ? num(leadsEl.value) : 0
       }) });
       await Promise.all([refreshAssets(), refreshCampaigns()]);
       showToast('Metrics logged for '+esc(campaignName)+'.');
