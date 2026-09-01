@@ -35,6 +35,13 @@
   #app-root .btn-active { background:var(--indigo); color:#fff; border-color:var(--indigo); }
 
   #app-root select, #app-root input, #app-root textarea { font-family:inherit; font-size:13px; padding:8px 11px; border-radius:10px; border:1px solid var(--line); color:var(--ink); background:#10141E; width:100%; }
+  /* The rule above targets every input, which caught checkboxes too — a checkbox stretched to
+     width:100% with 8px padding rendered as a large empty square that crushed its own label into
+     a three-line wrap. Checkboxes size to their content and keep the native control. */
+  #app-root input[type="checkbox"], #app-root input[type="radio"] {
+    width:auto; padding:0; border-radius:0; background:none; border:none;
+    accent-color:var(--indigo); flex:none; margin:0; cursor:pointer;
+  }
   #app-root select:focus, #app-root input:focus, #app-root textarea:focus { outline:none; border-color:var(--indigo); box-shadow:0 0 0 3px rgba(109,123,255,.20); }
   #app-root input::placeholder, #app-root textarea::placeholder { color:var(--faint); }
   #app-root label { font-size:12px; font-weight:600; color:var(--muted); display:block; margin-bottom:5px; }
@@ -63,6 +70,28 @@
   #app-root .perf-tile .v { font-family:'Bricolage Grotesque','Inter',sans-serif; font-weight:700; font-size:16px; margin-top:2px; }
   #app-root .perf-tile .l { font-size:10.5px; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
   #app-root a { color:var(--indigo); }
+
+  /* Shared treatment for every data table. Values used to be left at the default weight, which on
+     a dark card renders visibly dimmer than the bold label next to it even at the same colour —
+     the numbers read as greyed-out. Data cells are the thing being read here, so they get full
+     ink and a heavier weight than the headers around them. Tabular figures keep the digits in a
+     column from jittering as they change width. */
+  #app-root .data-table { width:100%; border-collapse:collapse; font-size:13px; }
+  #app-root .data-table th {
+    text-align:left; padding:10px 12px; font-size:10.5px; font-weight:700; color:var(--muted);
+    text-transform:uppercase; letter-spacing:.05em; white-space:nowrap;
+    border-bottom:1px solid var(--line); background:#12161F;
+  }
+  #app-root .data-table td {
+    padding:11px 12px; color:var(--ink); font-weight:500;
+    border-bottom:1px solid var(--line-soft); font-variant-numeric:tabular-nums;
+  }
+  #app-root .data-table th.num, #app-root .data-table td.num { text-align:right; }
+  #app-root .data-table td.dim { color:var(--muted); font-weight:400; }
+  #app-root .data-table tbody tr:hover { background:rgba(255,255,255,.032); }
+  #app-root .data-table tbody tr:last-child td { border-bottom:none; }
+  #app-root .data-table .sub { font-size:10.5px; color:var(--faint); font-weight:500; margin-top:2px; }
+  #app-root .data-table .empty { padding:24px; text-align:center; color:var(--faint); font-weight:400; }
 
   #app-root .tab-thumb-swiper { margin-bottom:10px; }
   #app-root .tab-thumb-swiper, #app-root .tab-thumb-swiper .swiper-wrapper { height:auto; }
@@ -573,18 +602,18 @@
       var list=assets.filter(function(a){return a.marketId===c.id;});
       var t=campaignTotalsFor(c.id);
       var accent=accentFor(c.country);
-      var cells=metricList(t).map(function(x){ return '<td style="padding:10px 12px; text-align:right;">'+x[1]+'</td>'; }).join('');
-      return '<tr style="border-bottom:1px solid var(--line-soft);">'
-        + '<td style="padding:10px 12px; white-space:nowrap;"><span class="meta"><span class="dot" style="background:'+accent+';"></span>'+flagFor(c.country)+' <b style="font-weight:600;">'+esc(c.country)+'</b> <span style="color:var(--faint); font-weight:600; margin-left:2px;">'+list.length+'</span></span></td>'
+      var cells=metricList(t).map(function(x){ return '<td class="num">'+x[1]+'</td>'; }).join('');
+      return '<tr>'
+        + '<td style="white-space:nowrap;"><span class="meta"><span class="dot" style="background:'+accent+';"></span>'+flagFor(c.country)+' <b style="font-weight:600;">'+esc(c.country)+'</b> <span style="color:var(--faint); font-weight:600; margin-left:2px;">'+list.length+'</span></span></td>'
         + cells + '</tr>';
     }).join('');
     document.getElementById('overall-perf').innerHTML =
       '<div class="card fadein" style="padding:15px 17px;">'
       + '<div class="section-title" style="margin:0 0 11px;">'+icon('chart',14,'var(--indigo)',1.8)+' Performance by country <span style="color:var(--faint); font-weight:600; text-transform:none; letter-spacing:0;">· '+reportingPeriodLabel()+' · '+countries.length+' markets</span></div>'
-      + '<div class="scroll-x"><table style="width:100%; border-collapse:collapse; font-size:12.5px; min-width:640px;">'
-      + '<thead><tr style="border-bottom:1px solid var(--line);">'
-      + heads.map(function(h,i){ return '<th style="text-align:'+(i===0?'left':'right')+'; padding:8px 12px; font-size:10.5px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:.04em;">'+h+'</th>'; }).join('')
-      + '</tr></thead><tbody>'+(rows||'<tr><td colspan="7" style="padding:20px; text-align:center; color:var(--faint);">No countries yet</td></tr>')+'</tbody></table></div>'
+      + '<div class="scroll-x"><table class="data-table" style="min-width:640px;">'
+      + '<thead><tr>'
+      + heads.map(function(h,i){ return '<th'+(i===0?'':' class="num"')+'>'+h+'</th>'; }).join('')
+      + '</tr></thead><tbody>'+(rows||'<tr><td colspan="7" class="empty">No countries yet</td></tr>')+'</tbody></table></div>'
       + '</div>';
   }
 
@@ -633,16 +662,16 @@
     var rows=ranked.map(function(c){
       var cd=derived(c);
       var state=campaignStateLabel(c);
-      return '<tr style="border-bottom:1px solid var(--line-soft);">'
-        + '<td style="padding:9px 12px;"><div style="font-weight:600;">'+esc(c.name)+'</div>'
-        + '<div style="font-size:10.5px; color:var(--faint);">'+flagFor(c.marketName)+' '+esc(c.marketName||'—')+'</div></td>'
-        + '<td style="padding:9px 12px;"><span class="chip" style="'+(state.tone==='live'?'background:rgba(52,199,123,.16); color:#5BD99A;':state.tone==='hold'?'background:rgba(240,180,60,.15); color:#E3B341;':'background:var(--line-soft); color:var(--faint);')+'">'+esc(state.text)+'</span></td>'
-        + '<td style="padding:9px 12px; text-align:right;">'+fmtMoney(c.spend)+'</td>'
-        + '<td style="padding:9px 12px; text-align:right;">'+fmtInt(c.impressions)+'</td>'
-        + '<td style="padding:9px 12px; text-align:right;">'+fmtInt(c.clicks)+'</td>'
-        + '<td style="padding:9px 12px; text-align:right;">'+fmtPct(cd.ctr)+'</td>'
-        + '<td style="padding:9px 12px; text-align:right;">'+fmtDec(cd.cpc)+'</td>'
-        + '<td style="padding:9px 12px; text-align:right;">'+fmtInt(c.leads)+'</td>'
+      return '<tr>'
+        + '<td><div style="font-weight:600;">'+esc(c.name)+'</div>'
+        + '<div class="sub">'+flagFor(c.marketName)+' '+esc(c.marketName||'—')+'</div></td>'
+        + '<td><span class="chip" style="'+(state.tone==='live'?'background:rgba(52,199,123,.16); color:#5BD99A;':state.tone==='hold'?'background:rgba(240,180,60,.15); color:#E3B341;':'background:var(--line-soft); color:var(--faint);')+'">'+esc(state.text)+'</span></td>'
+        + '<td class="num">'+fmtMoney(c.spend)+'</td>'
+        + '<td class="num">'+fmtInt(c.impressions)+'</td>'
+        + '<td class="num">'+fmtInt(c.clicks)+'</td>'
+        + '<td class="num">'+fmtPct(cd.ctr)+'</td>'
+        + '<td class="num">'+fmtDec(cd.cpc)+'</td>'
+        + '<td class="num">'+fmtInt(c.leads)+'</td>'
         + '</tr>';
     }).join('');
     var heads=[['Ad set',0],['State',0],['Spend',1],['Impr',1],['Clicks',1],['CTR',1],['CPC',1],['Leads',1]];
@@ -655,10 +684,10 @@
       + '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:9px; margin-bottom:14px;">'+tiles+'</div>'
       + '<div style="font-size:10.5px; color:var(--faint); font-weight:700; text-transform:uppercase; letter-spacing:.04em; margin-bottom:6px;">'
       + (showAllCampaigns||!live.length ? 'All ad sets' : 'Live ad sets')+' by spend</div>'
-      + '<div class="scroll-x"><table style="width:100%; border-collapse:collapse; font-size:12.5px; min-width:720px;">'
-      + '<thead><tr style="border-bottom:1px solid var(--line);">'
-      + heads.map(function(h){ return '<th style="text-align:'+(h[1]?'right':'left')+'; padding:8px 12px; font-size:10.5px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:.04em;">'+h[0]+'</th>'; }).join('')
-      + '</tr></thead><tbody>'+(rows||'<tr><td colspan="8" style="padding:20px; text-align:center; color:var(--faint);">No campaigns yet</td></tr>')+'</tbody></table></div>'
+      + '<div class="scroll-x"><table class="data-table" style="min-width:720px;">'
+      + '<thead><tr>'
+      + heads.map(function(h){ return '<th'+(h[1]?' class="num"':'')+'>'+h[0]+'</th>'; }).join('')
+      + '</tr></thead><tbody>'+(rows||'<tr><td colspan="8" class="empty">No campaigns yet</td></tr>')+'</tbody></table></div>'
       + '</div>';
   }
 
@@ -874,17 +903,58 @@
   // sync: LinkedIn only serves this pivot as one aggregate for a date range (no daily breakdown to
   // store and re-slice), and the account reports engagement from hundreds of thousands of
   // companies, so pulling it for every campaign on a schedule would cost far more than it's worth.
+  // Company engagement needs a longer window than spend does. LinkedIn suppresses demographic rows
+  // below a privacy threshold and its demographic data lags a day or two, so a short or very recent
+  // window legitimately comes back empty — on the 1st of the month "This month" is a single day and
+  // returns nothing at all, while the same ad set over the previous month returns 100 companies.
+  // Campaign Manager's own Companies report defaults to 90 days for exactly this reason.
+  var COMPANY_FALLBACK_DAYS = 90;
+
+  function companyWindowFor(range){
+    if(range.start && range.end) return { start:range.start, end:range.end };
+    return { start:addDaysIso(isoToday(), -(COMPANY_FALLBACK_DAYS-1)), end:isoToday() };
+  }
+  // Widened backwards from the end of the period being viewed, not from today — looking at Q1 and
+  // being shown the 90 days ending now would answer a question nobody asked.
+  function widerCompanyWindow(win){
+    return { start:addDaysIso(win.end, -(COMPANY_FALLBACK_DAYS-1)), end:win.end };
+  }
+  function daysBetween(win){
+    return Math.round((Date.parse(win.end+'T00:00:00Z')-Date.parse(win.start+'T00:00:00Z'))/86400000)+1;
+  }
+
+  function fetchCompanies(campaignId, win, refresh){
+    return api('/api/campaigns/'+campaignId+'?companies=1&start='+win.start+'&end='+win.end
+      + (refresh ? '&refresh=1' : ''));
+  }
+
   async function loadCompaniesFor(campaignId, refresh){
     companyPanels[campaignId] = { loading:true };
     renderAll();
     try {
-      var qs = dateRangeQuery() + (refresh ? '&refresh=1' : '');
-      var data = await api('/api/campaigns/'+campaignId+'?companies=1&'+qs.slice(1));
-      companyPanels[campaignId] = { loading:false, open:true, data:data };
+      var win = companyWindowFor(dateRange);
+      var data = await fetchCompanies(campaignId, win, refresh);
+      var state = { loading:false, open:true, data:data, window:win };
+      // Retry over a wider window rather than leaving a dead end. Labelled in the panel, never
+      // silent — showing 90 days of companies under a "Sep 2026" heading would be a lie.
+      if(!data.companies.length && daysBetween(win) < COMPANY_FALLBACK_DAYS){
+        var wide = widerCompanyWindow(win);
+        var fallback = await fetchCompanies(campaignId, wide, refresh);
+        if(fallback.companies.length){
+          state.data = fallback; state.window = wide; state.widenedFrom = win;
+        }
+      }
+      companyPanels[campaignId] = state;
     } catch(e){
       companyPanels[campaignId] = { loading:false, open:true, error:e.message };
     }
     renderAll();
+  }
+
+  function companyWindowLabel(state){
+    var w = state.window;
+    if(!w) return reportingPeriodLabel();
+    return fmtDate(w.start)+' – '+fmtDate(w.end);
   }
 
   function engagementLevel(company, top){
@@ -914,34 +984,41 @@
     }
     var list = (state.data && state.data.companies) || [];
     if(!list.length){
-      return '<div style="padding:12px 0; font-size:11.5px; color:var(--faint);">LinkedIn reported no company engagement for this ad set in '+esc(reportingPeriodLabel())+'.</div>';
+      // Say why, rather than leaving it looking like a failed request.
+      return '<div style="padding:12px 0; font-size:11.5px; color:var(--faint); line-height:1.5;">'
+        + 'LinkedIn reported no company engagement for this ad set over '+esc(companyWindowLabel(state))+'.'
+        + '<br>Company-level reporting is withheld below a privacy threshold and lags a day or two, '
+        + 'so short or very recent periods often come back empty even when the ad set is delivering. '
+        + 'Try a wider date range.'
+        + '</div>';
     }
     var top = num(list[0].impressions);
     var shown = state.showAll ? list : list.slice(0, 10);
     var rows = shown.map(function(co){
       var lvl = engagementLevel(co, top);
       var d = derived(co);
-      return '<tr style="border-bottom:1px solid var(--line-soft);">'
-        + '<td style="padding:8px 10px; font-weight:600;">'+esc(co.name || ('Company '+co.companyId))+'</td>'
-        + '<td style="padding:8px 10px; white-space:nowrap;">'+engagementBars(lvl)+' <span style="font-size:10.5px; color:var(--muted); margin-left:4px;">'+lvl.label+'</span></td>'
-        + '<td style="padding:8px 10px; text-align:right;">'+fmtInt(co.impressions)+'</td>'
-        + '<td style="padding:8px 10px; text-align:right;">'+fmtInt(co.clicks)+'</td>'
-        + '<td style="padding:8px 10px; text-align:right;">'+fmtPct(d.ctr)+'</td>'
+      return '<tr>'
+        + '<td style="font-weight:600;">'+esc(co.name || ('Company '+co.companyId))+'</td>'
+        + '<td style="white-space:nowrap;">'+engagementBars(lvl)+' <span style="font-size:10.5px; color:var(--muted); margin-left:4px;">'+lvl.label+'</span></td>'
+        + '<td class="num">'+fmtInt(co.impressions)+'</td>'
+        + '<td class="num">'+fmtInt(co.clicks)+'</td>'
+        + '<td class="num">'+fmtPct(d.ctr)+'</td>'
         + '</tr>';
     }).join('');
     var fetched = state.data && state.data.fetchedAt ? timeAgo(new Date(state.data.fetchedAt).getTime()) : '';
     return '<div style="padding:10px 0 4px;">'
       + '<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:7px;">'
-      + '<div style="font-size:10.5px; color:var(--faint); font-weight:700; text-transform:uppercase; letter-spacing:.04em;">Companies that saw this ad set · '+esc(reportingPeriodLabel())+'</div>'
+      + '<div style="font-size:10.5px; color:var(--faint); font-weight:700; text-transform:uppercase; letter-spacing:.04em;">Companies that saw this ad set · '+esc(companyWindowLabel(state))+'</div>'
       + '<span class="chip">'+list.length+' companies</span>'
+      + (state.widenedFrom ? '<span class="chip" style="background:var(--sky-tint); color:#7FD0F5;" title="LinkedIn returned nothing for the selected period — company reporting is withheld below a privacy threshold and lags a day or two. Widened to '+COMPANY_FALLBACK_DAYS+' days ending '+esc(state.window.end)+'.">nothing in '+esc(reportingPeriodLabel())+' · widened to '+COMPANY_FALLBACK_DAYS+' days</span>' : '')
       + (state.data && state.data.stale ? '<span class="chip" style="background:var(--amber-tint); color:#F6C860;" title="'+esc(state.data.error||'')+'">LinkedIn unreachable — showing the last good pull</span>' : '')
       + (fetched?'<span style="font-size:10.5px; color:var(--faint);">as of '+fetched+'</span>':'')
       + '<button class="btn btn-sm refresh-companies-btn" data-campaign="'+cam.id+'" style="margin-left:auto;">Refresh</button>'
       + '</div>'
-      + '<div class="scroll-x"><table style="width:100%; border-collapse:collapse; font-size:12px; min-width:460px;">'
-      + '<thead><tr style="border-bottom:1px solid var(--line);">'
+      + '<div class="scroll-x"><table class="data-table" style="min-width:460px; font-size:12.5px;">'
+      + '<thead><tr>'
       + [['Company',0],['Engagement',0],['Impr',1],['Clicks',1],['CTR',1]].map(function(h){
-          return '<th style="text-align:'+(h[1]?'right':'left')+'; padding:7px 10px; font-size:10px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:.04em;">'+h[0]+'</th>';
+          return '<th'+(h[1]?' class="num"':'')+'>'+h[0]+'</th>';
         }).join('')
       + '</tr></thead><tbody>'+rows+'</tbody></table></div>'
       + (list.length>10 ? '<button class="btn btn-sm toggle-companies-btn" data-campaign="'+cam.id+'" style="margin-top:8px;">'+(state.showAll?'Show top 10':'Show all '+list.length)+'</button>' : '')
@@ -986,9 +1063,9 @@
       : 'No campaigns yet for this market.';
     return '<div style="background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:13px 15px;">'
       + '<div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:8px; flex-wrap:wrap;">'
-      + '<label style="display:flex; align-items:center; gap:6px; font-size:11.5px; color:var(--muted); cursor:pointer;">'
-      + '<input type="checkbox" class="toggle-all-campaigns"'+(showAllCampaigns?' checked':'')+' style="cursor:pointer;" />'
-      + 'Show non-live campaigns'+(hidden>0?' <span class="chip" style="background:var(--line-soft); color:var(--faint);">'+hidden+' hidden</span>':'')
+      + '<label style="display:flex; align-items:center; gap:7px; font-size:11.5px; color:var(--muted); cursor:pointer; white-space:nowrap;">'
+      + '<input type="checkbox" class="toggle-all-campaigns"'+(showAllCampaigns?' checked':'')+' />'
+      + '<span>Show non-live campaigns</span>'+(hidden>0?' <span class="chip" style="background:var(--line-soft); color:var(--faint);">'+hidden+' hidden</span>':'')
       + '</label>'
       + '<button class="btn btn-sm add-campaign-btn" data-market="'+c.id+'">+ Campaign</button>'
       + '</div>'
@@ -1142,30 +1219,30 @@
       var markets = a.marketNames.length>1
         ? a.marketNames.map(function(n){ return flagFor(n); }).join(' ')+' '+a.marketNames.length+' markets'
         : flagFor(a.market)+' '+esc(a.market||'—');
-      return '<tr class="table-row" data-id="'+a.id+'" style="cursor:pointer; border-bottom:1px solid var(--line-soft);">'
-        + '<td style="padding:11px 12px;">'+markets+'</td>'
-        + '<td style="padding:11px 12px; font-weight:600;">'+esc(a.title)
+      return '<tr class="table-row" data-id="'+a.id+'" style="cursor:pointer;">'
+        + '<td style="white-space:nowrap;">'+markets+'</td>'
+        + '<td style="font-weight:600;">'+esc(a.title)
         + (a.merged?' <span class="chip" style="background:var(--violet-tint); color:#C9BFFF;" title="Combined across '+a.parts.length+' placements in: '+esc(a.campaignNames.join(', '))+'">'+icon('stack',11,'currentColor',1.8)+mergeLabel(a)+'</span>':'')
         + '</td>'
-        + '<td style="padding:11px 12px;"><span class="meta" style="color:'+cfg.color+';">'+icon(cfg.ic,14,'currentColor',1.8)+'<span style="color:var(--ink);">'+esc(a.type)+'</span></span></td>'
-        + '<td style="padding:11px 12px;"><span class="badge" style="background:'+col.bg+'; color:'+col.fg+';">'+a.status+'</span>'+(overdue?' <span class="badge" style="background:var(--danger-tint); color:var(--danger);">Late</span>':'')+'</td>'
-        + '<td style="padding:11px 12px;">'+esc(a.assignedTo||'—')+'</td>'
-        + '<td style="padding:11px 12px;">'+(a.dueDate?fmtDate(a.dueDate):'—')+'</td>'
-        + '<td style="padding:11px 12px; text-align:right;">'+fmtMoney(a.spend)+'</td>'
-        + '<td style="padding:11px 12px; text-align:right;">'+fmtInt(a.impressions)+'</td>'
-        + '<td style="padding:11px 12px; text-align:right;">'+fmtInt(a.clicks)+'</td>'
-        + '<td style="padding:11px 12px; text-align:right;">'+fmtPct(d.ctr)+'</td>'
-        + '<td style="padding:11px 12px; text-align:right;">'+fmtDec(d.cpc)+'</td>'
-        + '<td style="padding:11px 12px; text-align:right;">'+fmtInt(a.leads)+'</td>'
+        + '<td><span class="meta" style="color:'+cfg.color+';">'+icon(cfg.ic,14,'currentColor',1.8)+'<span style="color:var(--ink);">'+esc(a.type)+'</span></span></td>'
+        + '<td><span class="badge" style="background:'+col.bg+'; color:'+col.fg+';">'+a.status+'</span>'+(overdue?' <span class="badge" style="background:var(--danger-tint); color:var(--danger);">Late</span>':'')+'</td>'
+        + '<td>'+esc(a.assignedTo||'—')+'</td>'
+        + '<td>'+(a.dueDate?fmtDate(a.dueDate):'—')+'</td>'
+        + '<td class="num">'+fmtMoney(a.spend)+'</td>'
+        + '<td class="num">'+fmtInt(a.impressions)+'</td>'
+        + '<td class="num">'+fmtInt(a.clicks)+'</td>'
+        + '<td class="num">'+fmtPct(d.ctr)+'</td>'
+        + '<td class="num">'+fmtDec(d.cpc)+'</td>'
+        + '<td class="num">'+fmtInt(a.leads)+'</td>'
         + '</tr>';
     }).join('');
     var headers=[['Country',0],['Title',0],['Type',0],['Status',0],['Assigned',0],['Due',0],['Spend',1],['Impr',1],['Clicks',1],['CTR',1],['CPC',1],['Leads',1]];
     document.getElementById('table-view').innerHTML =
       '<div class="card scroll-x fadein" style="padding:0; overflow:hidden;">'
-      + '<table style="width:100%; border-collapse:collapse; font-size:12.5px; min-width:980px;">'
-      + '<thead><tr style="background:#12161F; border-bottom:1px solid var(--line);">'
-      + headers.map(function(h){ return '<th style="text-align:'+(h[1]?'right':'left')+'; padding:11px 12px; font-size:11px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:.04em;">'+h[0]+'</th>'; }).join('')
-      + '</tr></thead><tbody>'+(rows||'<tr><td colspan="12" style="padding:26px; text-align:center; color:var(--faint);">No assets match these filters</td></tr>')+'</tbody></table></div>';
+      + '<table class="data-table" style="min-width:980px;">'
+      + '<thead><tr>'
+      + headers.map(function(h){ return '<th'+(h[1]?' class="num"':'')+'>'+h[0]+'</th>'; }).join('')
+      + '</tr></thead><tbody>'+(rows||'<tr><td colspan="12" class="empty">No assets match these filters</td></tr>')+'</tbody></table></div>';
     document.querySelectorAll('#table-view .table-row').forEach(function(el){ el.addEventListener('click', function(){ openAssetModal(Number(el.getAttribute('data-id'))); }); });
   }
 
@@ -1318,20 +1395,20 @@
     var good=parsed.rows.filter(function(r){return !r.error;}).length;
     var bad=parsed.rows.length-good;
     var preview=parsed.rows.slice(0, 50).map(function(r){
-      return '<tr style="border-bottom:1px solid var(--line-soft);'+(r.error?' background:rgba(255,92,97,.07);':'')+'">'
-        + '<td style="padding:6px 8px; color:var(--faint);">'+r._line+'</td>'
-        + '<td style="padding:6px 8px;">'+esc(r.title||'—')+'</td>'
-        + '<td style="padding:6px 8px;">'+esc(r.country||'—')+'</td>'
-        + '<td style="padding:6px 8px;">'+esc(r.campaign||'—')+'</td>'
-        + '<td style="padding:6px 8px; color:'+(r.error?'var(--danger)':'var(--faint)')+';">'+esc(r.error||r.warning||'ok')+'</td>'
+      return '<tr'+(r.error?' style="background:rgba(255,92,97,.07);"':'')+'>'
+        + '<td class="dim">'+r._line+'</td>'
+        + '<td style="font-weight:600;">'+esc(r.title||'—')+'</td>'
+        + '<td>'+esc(r.country||'—')+'</td>'
+        + '<td class="dim">'+esc(r.campaign||'—')+'</td>'
+        + '<td style="color:'+(r.error?'var(--danger)':'var(--faint)')+';">'+esc(r.error||r.warning||'ok')+'</td>'
         + '</tr>';
     }).join('');
     var body='<div style="font-size:12px; color:var(--muted); margin-bottom:10px;">'
       + '<b>'+good+'</b> row'+(good===1?'':'s')+' ready to import'+(bad?', <b style="color:var(--danger);">'+bad+'</b> with problems (skipped)':'')+'.'
       + (parsed.rows.length>50?' Showing the first 50.':'')+'</div>'
-      + '<div class="scroll-x" style="max-height:44vh; overflow-y:auto;"><table style="width:100%; border-collapse:collapse; font-size:11.5px; min-width:520px;">'
-      + '<thead><tr style="border-bottom:1px solid var(--line);">'
-      + ['Line','Title','Country','Ad set','Status'].map(function(h){ return '<th style="text-align:left; padding:6px 8px; font-size:10px; color:var(--muted); font-weight:700; text-transform:uppercase;">'+h+'</th>'; }).join('')
+      + '<div class="scroll-x" style="max-height:44vh; overflow-y:auto;"><table class="data-table" style="min-width:520px; font-size:12px;">'
+      + '<thead><tr>'
+      + ['Line','Title','Country','Ad set','Status'].map(function(h){ return '<th>'+h+'</th>'; }).join('')
       + '</tr></thead><tbody>'+preview+'</tbody></table></div>';
     showModal('Import assets from CSV', body, async function(){
       await commitImport(libraryDraftRows||[]);
@@ -1366,16 +1443,16 @@
         a.adCopyLink?'<a href="'+esc(a.adCopyLink)+'" target="_blank" rel="noopener" title="Ad copy" onclick="event.stopPropagation();" style="color:var(--amber);">'+icon('copy',13,'currentColor',1.8)+'</a>':'',
         a.creativeLink?'<a href="'+esc(a.creativeLink)+'" target="_blank" rel="noopener" title="Creative" onclick="event.stopPropagation();" style="color:var(--violet);">'+icon('image',13,'currentColor',1.8)+'</a>':''
       ].filter(Boolean).join(' ') || '<span style="color:var(--faint);">—</span>';
-      return '<tr class="lib-row" data-id="'+a.id+'" style="cursor:pointer; border-bottom:1px solid var(--line-soft);">'
-        + '<td style="padding:10px 12px; white-space:nowrap;">'+flagFor(a.market)+' '+esc(a.market||'—')+'</td>'
-        + '<td style="padding:10px 12px; font-weight:600;">'+esc(a.title)+'</td>'
-        + '<td style="padding:10px 12px;"><span class="meta" style="color:'+cfg.color+';">'+icon(cfg.ic,13,'currentColor',1.8)+'<span style="color:var(--ink);">'+esc(a.type)+'</span></span></td>'
-        + '<td style="padding:10px 12px; color:var(--muted);">'+esc(a.campaign||'—')+'</td>'
-        + '<td style="padding:10px 12px;"><span class="badge" style="background:'+col.bg+'; color:'+col.fg+';">'+a.status+'</span></td>'
-        + '<td style="padding:10px 12px;">'+esc(a.assignedTo||'—')+'</td>'
-        + '<td style="padding:10px 12px;'+(overdue?' color:var(--danger); font-weight:600;':'')+'">'+(a.dueDate?fmtDate(a.dueDate):'—')+'</td>'
-        + '<td style="padding:10px 12px;">'+esc(a.version||'—')+'</td>'
-        + '<td style="padding:10px 12px; white-space:nowrap;">'+links+'</td>'
+      return '<tr class="lib-row" data-id="'+a.id+'" style="cursor:pointer;">'
+        + '<td style="white-space:nowrap;">'+flagFor(a.market)+' '+esc(a.market||'—')+'</td>'
+        + '<td style="font-weight:600;">'+esc(a.title)+'</td>'
+        + '<td><span class="meta" style="color:'+cfg.color+';">'+icon(cfg.ic,13,'currentColor',1.8)+'<span style="color:var(--ink);">'+esc(a.type)+'</span></span></td>'
+        + '<td class="dim">'+esc(a.campaign||'—')+'</td>'
+        + '<td><span class="badge" style="background:'+col.bg+'; color:'+col.fg+';">'+a.status+'</span></td>'
+        + '<td>'+esc(a.assignedTo||'—')+'</td>'
+        + '<td'+(overdue?' style="color:var(--danger); font-weight:600;"':'')+'>'+(a.dueDate?fmtDate(a.dueDate):'—')+'</td>'
+        + '<td>'+esc(a.version||'—')+'</td>'
+        + '<td style="white-space:nowrap;">'+links+'</td>'
         + '</tr>';
     }).join('');
     var heads=['Country','Title','Type','Ad set','Status','Assigned','Due','Ver','Files'];
@@ -1403,10 +1480,10 @@
       + '<span style="font-size:11.5px; color:var(--faint);">'+list.length+' of '+assets.length+' records</span>'
       + '</div>'
       + '<div class="card scroll-x fadein" style="padding:0; overflow:hidden;">'
-      + '<table style="width:100%; border-collapse:collapse; font-size:12.5px; min-width:900px;">'
-      + '<thead><tr style="background:#12161F; border-bottom:1px solid var(--line);">'
-      + heads.map(function(h){ return '<th style="text-align:left; padding:11px 12px; font-size:11px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:.04em;">'+h+'</th>'; }).join('')
-      + '</tr></thead><tbody>'+(rows||'<tr><td colspan="9" style="padding:26px; text-align:center; color:var(--faint);">No asset records'+(assets.length?' match these filters':' yet')+'</td></tr>')+'</tbody></table></div>';
+      + '<table class="data-table" style="min-width:900px;">'
+      + '<thead><tr>'
+      + heads.map(function(h){ return '<th>'+h+'</th>'; }).join('')
+      + '</tr></thead><tbody>'+(rows||'<tr><td colspan="9" class="empty">No asset records'+(assets.length?' match these filters':' yet')+'</td></tr>')+'</tbody></table></div>';
 
     // Filter values are re-read from the DOM on each render, so restore what was typed.
     document.getElementById('lib-search').value=libFilters.q;
