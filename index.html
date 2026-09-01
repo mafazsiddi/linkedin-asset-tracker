@@ -29,7 +29,7 @@
   #app-root .btn { font-family:inherit; font-size:13px; font-weight:600; padding:8px 14px; border-radius:10px; border:1px solid var(--line); background:#1A2030; cursor:pointer; color:var(--ink); transition:background .12s, border-color .12s, transform .06s; }
   #app-root .btn:hover { background:#232B3C; }
   #app-root .btn:active { transform:translateY(1px); }
-  #app-root .btn-sm { padding:5px 11px; font-size:12px; display: flex; }
+  #app-root .btn-sm { padding:5px 11px; font-size:12px; display: flex; align-items: center; gap: 4px; }
   #app-root .btn-primary { background:var(--indigo); border-color:var(--indigo); color:#fff; }
   #app-root .btn-primary:hover { background:var(--indigo-strong); }
   #app-root .btn-active { background:var(--indigo); color:#fff; border-color:var(--indigo); }
@@ -347,7 +347,10 @@
       showToast('Could not reach the backend API — check it is deployed and reachable.');
       countries=[]; campaigns=[]; assets=[]; notifications=[];
     }
-    countries.forEach(function(c){ if(expanded[c.id]===undefined) expanded[c.id]=true; });
+    // Collapsed by default: seven markets expanded at once is several screens of scrolling before
+    // the first useful comparison. The header row still carries each market's headline numbers, so
+    // nothing is hidden — open the one you're working on.
+    countries.forEach(function(c){ if(expanded[c.id]===undefined) expanded[c.id]=false; });
     renderAll(); renderBell();
   }
   // No range means "All time", and that has to be said explicitly: an empty query string makes the
@@ -656,38 +659,14 @@
       bigMetricTile('Live ad sets', live.length, all.length+' total · '+linked+' linked', live.length?'var(--emerald)':'var(--muted)')
     ].join('');
 
-    // Ranked by spend: the question this table answers is "where is the money going", and the
-    // campaign list is long enough that alphabetical order buries the ones that matter.
-    var ranked=(showAllCampaigns?all:(live.length?live:all)).slice().sort(function(a,b){ return num(b.spend)-num(a.spend); });
-    var rows=ranked.map(function(c){
-      var cd=derived(c);
-      var state=campaignStateLabel(c);
-      return '<tr>'
-        + '<td><div style="font-weight:600;">'+esc(c.name)+'</div>'
-        + '<div class="sub">'+flagFor(c.marketName)+' '+esc(c.marketName||'—')+'</div></td>'
-        + '<td><span class="chip" style="'+(state.tone==='live'?'background:rgba(52,199,123,.16); color:#5BD99A;':state.tone==='hold'?'background:rgba(240,180,60,.15); color:#E3B341;':'background:var(--line-soft); color:var(--faint);')+'">'+esc(state.text)+'</span></td>'
-        + '<td class="num">'+fmtMoney(c.spend)+'</td>'
-        + '<td class="num">'+fmtInt(c.impressions)+'</td>'
-        + '<td class="num">'+fmtInt(c.clicks)+'</td>'
-        + '<td class="num">'+fmtPct(cd.ctr)+'</td>'
-        + '<td class="num">'+fmtDec(cd.cpc)+'</td>'
-        + '<td class="num">'+fmtInt(c.leads)+'</td>'
-        + '</tr>';
-    }).join('');
-    var heads=[['Ad set',0],['State',0],['Spend',1],['Impr',1],['Clicks',1],['CTR',1],['CPC',1],['Leads',1]];
-
+    // Headline totals only. The per-ad-set breakdown that used to sit here duplicated the campaigns
+    // panel inside each country block, which is where you act on a single ad set anyway.
     el.innerHTML='<div class="card fadein" style="padding:15px 17px;">'
       + '<div class="section-title" style="margin:0 0 4px;">'+icon('target',14,'var(--indigo)',1.8)+' Overall campaign performance <span style="color:var(--faint); font-weight:600; text-transform:none; letter-spacing:0;">· '+reportingPeriodLabel()+'</span></div>'
-      // Spelt out because the table underneath lists live ad sets only, and the totals above it do
+      // Spelt out because the campaigns panels below list live ad sets only while these totals do
       // not — spend in the period is spend in the period, whether or not the ad set is still running.
       + '<div style="font-size:11px; color:var(--faint); margin-bottom:11px;">Totals cover all '+all.length+' ad sets in the period, including ones no longer running.</div>'
-      + '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:9px; margin-bottom:14px;">'+tiles+'</div>'
-      + '<div style="font-size:10.5px; color:var(--faint); font-weight:700; text-transform:uppercase; letter-spacing:.04em; margin-bottom:6px;">'
-      + (showAllCampaigns||!live.length ? 'All ad sets' : 'Live ad sets')+' by spend</div>'
-      + '<div class="scroll-x"><table class="data-table" style="min-width:720px;">'
-      + '<thead><tr>'
-      + heads.map(function(h){ return '<th'+(h[1]?' class="num"':'')+'>'+h[0]+'</th>'; }).join('')
-      + '</tr></thead><tbody>'+(rows||'<tr><td colspan="8" class="empty">No campaigns yet</td></tr>')+'</tbody></table></div>'
+      + '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:9px;">'+tiles+'</div>'
       + '</div>';
   }
 
