@@ -147,6 +147,7 @@
   <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:16px;">
     <input id="f-search" placeholder="Search title or campaign, all countries" style="flex:1; min-width:220px;" />
     <select id="f-status" style="width:auto; min-width:160px;"><option value="">All statuses</option></select>
+    <div id="merge-filter"></div>
     <div id="date-filter" style="position:relative;"></div>
     <button class="btn btn-primary" id="add-country-btn">+ Add country</button>
   </div>
@@ -219,6 +220,9 @@
   // Campaign panels show only what LinkedIn is currently delivering; this reveals the rest.
   // Persisted so the choice survives a reload.
   var showAllCampaigns = (function(){ try { return localStorage.getItem('showAllCampaigns')==='1'; } catch(e){ return false; } })();
+  // Whether one creative running in several ad sets is shown as one combined row or as one row per
+  // ad set. Defaults to combined; persisted so the choice survives a reload.
+  var mergeDuplicates = (function(){ try { return localStorage.getItem('mergeDuplicates')!=='0'; } catch(e){ return true; } })();
   var activeAssetTab = {}, tabMainSwipers = {}, tabThumbSwipers = {};
   // Which merged creatives have their per-ad-set breakdown unfolded, keyed by the merge key.
   var expandedAssets = {};
@@ -414,6 +418,31 @@
         + '<div><div style="font-size:12px; color:var(--muted); font-weight:600;">'+c.label+'</div>'
         + '<div class="disp" style="font-size:26px; font-weight:800; line-height:1; margin-top:3px; color:'+c.color+';">'+c.value+'</div></div></div>';
     }).join('');
+  }
+
+  // Rendered into whichever view is showing; both instances drive the same setting.
+  function mergeToggleHtml(){
+    var dupes = 0;
+    var seen = {};
+    assets.forEach(function(a){
+      var k=(a.title||'').trim().toLowerCase();
+      if(seen[k]) dupes++; else seen[k]=1;
+    });
+    return '<label class="merge-toggle-box" style="display:flex; align-items:center; gap:7px; font-size:11.5px; color:var(--muted); cursor:pointer; white-space:nowrap;" '
+      + 'title="On: one row per creative, spend combined across every ad set it runs in. Off: one row per ad, matching Campaign Manager line for line.">'
+      + '<input type="checkbox" class="merge-toggle-input"'+(mergeDuplicates?' checked':'')+' />'
+      + '<span>Combine duplicate creatives</span>'
+      + (dupes?' <span class="chip" style="background:var(--violet-tint); color:#C9BFFF;">'+dupes+' dupes</span>':'')
+      + '</label>';
+  }
+  function bindMergeToggle(root){
+    root.querySelectorAll('.merge-toggle-input').forEach(function(el){
+      el.addEventListener('change', function(){
+        mergeDuplicates = el.checked;
+        try { localStorage.setItem('mergeDuplicates', mergeDuplicates?'1':'0'); } catch(e){}
+        renderAll();
+      });
+    });
   }
 
   function populateStatusFilter(){ var fs=document.getElementById('f-status'); var cur=fs.value; fs.innerHTML='<option value="">All statuses</option>'+STATUS_LIST.map(function(v){return '<option value="'+v+'">'+v+'</option>';}).join(''); fs.value=cur; }
@@ -709,7 +738,11 @@
     return [['cost',fmtMoney(o.spend)],['clicks',fmtInt(o.clicks)],['impr',fmtInt(o.impressions)],['cpc',fmtDec(d.cpc)],['reach',fmtInt(o.reach)],['leads',fmtInt(o.leads)]];
   }
   function metricChips(a){
-    return '<div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; padding-top:10px; border-top:1px dashed var(--line);">'
+    // A combined figure has to announce itself. Otherwise a creative running in three ad sets shows
+    // triple the spend of the matching Campaign Manager line and reads as a bug rather than a sum.
+    var combined = a && a.merged;
+    return '<div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:10px; padding-top:10px; border-top:1px dashed var(--line);">'
+      + (combined?'<span class="chip" style="background:var(--violet-tint); color:#C9BFFF;">'+icon('stack',11,'currentColor',1.8)+'combined</span>':'')
       + metricList(a).map(function(x){ return '<span class="chip"><b>'+x[1]+'</b> '+x[0]+'</span>'; }).join('') + '</div>';
   }
 
@@ -788,7 +821,13 @@
   //
   // Grouped on the ad name, which is what the creative is actually identified by in Campaign
   // Manager, rather than the creative ID (unique per placement, so it would never group anything).
-  function assetGroupKey(a){ return (a.title||'').trim().toLowerCase(); }
+  // With merging off, every ad is its own group — each row then lines up one-to-one with a row in
+  // Campaign Manager, which is what you need when reconciling figures. With it on, one creative is
+  // one row no matter how many ad sets it runs in, which is what you need when deciding whether the
+  // creative works. Both are correct; they answer different questions, so it's a switch.
+  function assetGroupKey(a){
+    return mergeDuplicates ? (a.title||'').trim().toLowerCase() : ('#'+a.id);
+  }
 
   // How many distinct ad sets a merged creative runs in — not the same as how many placements it
   // has, since one ad set can hold several creative IDs for the same artwork.
@@ -1216,12 +1255,22 @@
         + '</tr>';
     }).join('');
     var headers=[['Country',0],['Title',0],['Type',0],['Status',0],['Assigned',0],['Due',0],['Spend',1],['Impr',1],['Clicks',1],['CTR',1],['CPC',1],['Leads',1]];
+    var mergedCount = filtered.filter(function(g){return g.merged;}).length;
     document.getElementById('table-view').innerHTML =
-      '<div class="card scroll-x fadein" style="padding:0; overflow:hidden;">'
+      '<div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px;">'
+      + '<div id="table-merge-filter"></div>'
+      + '<span style="font-size:11.5px; color:var(--faint);">'
+      + (mergeDuplicates
+          ? (mergedCount?mergedCount+' row'+(mergedCount===1?'':'s')+' combine a creative across several ad sets — spend is the total of all of them.':'No creative runs in more than one ad set here.')
+          : 'One row per ad, matching Campaign Manager line for line.')
+      + '</span></div>'
+      + '<div class="card scroll-x fadein" style="padding:0; overflow:hidden;">'
       + '<table class="data-table" style="min-width:980px;">'
       + '<thead><tr>'
       + headers.map(function(h){ return '<th'+(h[1]?' class="num"':'')+'>'+h[0]+'</th>'; }).join('')
       + '</tr></thead><tbody>'+(rows||'<tr><td colspan="12" class="empty">No assets match these filters</td></tr>')+'</tbody></table></div>';
+    var tm=document.getElementById('table-merge-filter');
+    if(tm){ tm.innerHTML=mergeToggleHtml(); bindMergeToggle(tm); }
     document.querySelectorAll('#table-view .table-row').forEach(function(el){ el.addEventListener('click', function(){ openAssetModal(Number(el.getAttribute('data-id'))); }); });
   }
 
@@ -1498,8 +1547,15 @@
     });
   }
 
+  function renderMergeFilter(){
+    var el=document.getElementById('merge-filter');
+    if(!el) return;
+    el.innerHTML = mergeToggleHtml();
+    bindMergeToggle(el);
+  }
+
   function renderAll(){
-    renderDateFilter(); populateStatusFilter(); renderFreshness();
+    renderDateFilter(); populateStatusFilter(); renderFreshness(); renderMergeFilter();
     if(currentTab==='library'){ renderLibraryView(); return; }
     renderStats(); renderOverallCampaigns(); renderOverall();
     if(currentTab==='countries') renderCountryBlocks(); else renderTableView();

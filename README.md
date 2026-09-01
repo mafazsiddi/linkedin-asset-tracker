@@ -196,6 +196,14 @@ breaks it down per ad set. Ratios are recomputed from the combined totals (CTR =
 total impressions), never averaged across placements — that would weight a 12-impression placement
 the same as a 12,000-impression one.
 
+**"Combine duplicate creatives" turns this off.** A combined row shows the total across every ad
+set, so it is deliberately larger than the matching line in Campaign Manager — a creative in three
+ad sets shows roughly triple. That is a sum, not a bug, but it makes side-by-side reconciliation
+impossible, so the toggle (in the filter bar and above the All-assets table, persisted, default on)
+switches to one row per ad, which lines up with Campaign Manager one-to-one. Totals are identical
+either way; only the grouping changes. Combined rows also carry a `combined` chip next to their
+figures so a summed number is never mistaken for a single ad's.
+
 Grouped on the **name**, not the creative ID: the ID is unique per placement, so it would never
 group anything. The breakdown rolls up per ad set rather than per placement because LinkedIn
 routinely holds several creative IDs for the same artwork inside one ad set — this account has a
