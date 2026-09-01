@@ -94,6 +94,28 @@ create table if not exists asset_daily_metrics (
   unique (asset_id, metric_date)
 );
 
+-- Which companies saw a given campaign's ads, per reporting window.
+--
+-- Not one row per day like the other metrics tables: LinkedIn only serves demographic pivots
+-- (MEMBER_COMPANY) at timeGranularity=ALL, so a result is only meaningful for the exact date range
+-- it was requested for — hence range_start/range_end in the key rather than a metric_date. Filled
+-- on demand by lib/companies.js and re-fetched once fetched_at ages past the cache TTL.
+create table if not exists campaign_company_engagement (
+  id serial primary key,
+  campaign_id integer not null references campaigns(id) on delete cascade,
+  range_start date not null,
+  range_end date not null,
+  company_urn text not null,
+  company_name text,
+  impressions integer not null default 0,
+  clicks integer not null default 0,
+  spend numeric not null default 0,
+  reach integer not null default 0,
+  leads integer not null default 0,
+  fetched_at timestamptz not null default now(),
+  unique (campaign_id, range_start, range_end, company_urn)
+);
+
 create table if not exists notifications (
   id serial primary key,
   to_name text not null,
@@ -138,3 +160,5 @@ create unique index if not exists assets_li_creative_id_key
 
 create index if not exists campaign_daily_metrics_date_idx on campaign_daily_metrics (metric_date);
 create index if not exists asset_daily_metrics_date_idx on asset_daily_metrics (metric_date);
+create index if not exists campaign_company_engagement_lookup_idx
+  on campaign_company_engagement (campaign_id, range_start, range_end);

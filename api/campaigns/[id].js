@@ -1,12 +1,37 @@
 const { query } = require('../../lib/db');
 const { json, methodNotAllowed, currentMonthRange, withHandler } = require('../../lib/util');
-const { CAMPAIGN_SELECT } = require('../../lib/queries');
+const { CAMPAIGN_SELECT, reportingRange } = require('../../lib/queries');
 const { backfillCampaign } = require('../../lib/backfill');
 const { listCampaignCreatives } = require('../../lib/linkedin');
+const { companiesForCampaign } = require('../../lib/companies');
+const { ensureSchema } = require('../../lib/migrate');
 const { DEAD_STATUSES: DEAD_CREATIVE_STATUSES } = require('../../lib/importer');
 
 module.exports = withHandler(async function handler(req, res) {
   const id = Number(req.query.id);
+
+  // GET /api/campaigns/:id?companies=1[&start=&end=][&refresh=1] — the companies that have seen
+  // this ad set, mirroring Campaign Manager's Companies report. Rides on this route for the same
+  // reason ?creatives=1 does: the Hobby plan caps a deployment at 12 Serverless Functions and
+  // api/ is already at exactly 12.
+  if (req.method === 'GET' && req.query.companies) {
+    const { rows } = await query('select * from campaigns where id = $1', [id]);
+    if (!rows.length) return json(res, 404, { error: 'Not found' });
+    const campaign = rows[0];
+    if (!campaign.li_campaign_id) {
+      return json(res, 409, {
+        error: `Campaign "${campaign.name}" has no LinkedIn campaign ID set, so its audience can't be looked up.`
+      });
+    }
+    // The cache table arrived after the first deploys, and production can't be reached with psql —
+    // so make sure it exists before reading through it.
+    await ensureSchema();
+    const { start, end } = reportingRange(req);
+    const result = await companiesForCampaign(campaign, start, end, {
+      refresh: Boolean(req.query.refresh)
+    });
+    return json(res, 200, Object.assign({ campaignId: id, window: { start, end } }, result));
+  }
 
   // GET /api/campaigns/:id?creatives=1 — lists the real LinkedIn ads under this campaign so an
   // asset can be pointed at one. An asset only gets its own (rather than its campaign's) numbers

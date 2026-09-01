@@ -9,10 +9,30 @@ single static `index.html`; backend is Vercel Serverless Functions under `api/` 
 - **Campaigns**: LinkedIn campaigns, matched by exact name (e.g. `UAE_EN - Compliance`) to Campaign
   Manager. Several creative assets can share one campaign.
 - **Assets**: creative briefs/deliverables, each linked to a market and (optionally) a campaign.
-- **Metrics**: stored per campaign per day (`campaign_daily_metrics`). "Current month" totals are
-  summed on read — there's no separate lifetime counter to keep in sync. All spend is in INR.
-  Metrics only exist at campaign granularity (that's what LinkedIn's API reports), so assets that
-  share a campaign show identical numbers — that's expected, not a bug.
+- **Metrics**: stored per campaign per day (`campaign_daily_metrics`). Totals for whatever period
+  the date picker is on are summed on read — there's no separate lifetime counter to keep in sync.
+  All spend is in INR. Metrics only exist at campaign granularity (that's what LinkedIn's API
+  reports), so assets that share a campaign show identical numbers — that's expected, not a bug.
+- **Company engagement**: which companies saw each ad set (`campaign_company_engagement`), keyed by
+  reporting window rather than by day — see "Which companies saw an ad set" below.
+
+## Reporting period
+
+The date picker drives every number on the page and offers three ways to pick a period:
+
+| Mode | What it does |
+|---|---|
+| Presets | This month, last month, this quarter, last 7/30 days, all time |
+| **Month** | Any month of any year, one tap — paged by year |
+| **Quarter** | Q1–Q4 of any year |
+| **Calendar** | Click a first and last day for an arbitrary range |
+
+A month or quarter still in progress is clamped to today, so "This quarter" means quarter-to-date
+rather than asking the API for days that haven't happened yet. The picked period keeps its name in
+the UI ("Q3 2026" rather than "Jul 1 – Sep 30").
+
+> "All time" sends `?all=1`. It has to be explicit: an absent range makes the API fall back to the
+> current month, so before this existed the all-time option quietly showed current-month numbers.
 
 ## One-time setup
 
@@ -50,11 +70,20 @@ vercel --prod
 until you flip `LINKEDIN_MODE`, generating deterministic fake numbers per campaign/day so the whole
 pipeline (sync → store → roll up → display) is exercised end-to-end before real credentials exist.
 
-For fresher-than-daily data on the free Vercel plan (which caps its own cron at once/day),
-`.github/workflows/hourly-sync.yml` calls the same endpoint hourly via GitHub Actions. It needs a
-repo secret: **Settings → Secrets and variables → Actions → New repository secret** named
-`CRON_SECRET`, set to the same value as the `CRON_SECRET` env var in Vercel. The Vercel cron stays
-as a once-daily fallback in case the Actions run is skipped or disabled.
+### Refresh cadence — every 2 hours
+
+The free Vercel plan caps its own cron at once per day, so the real schedule lives in
+`.github/workflows/sync.yml`, which calls the same endpoint **every 2 hours** via GitHub Actions.
+It needs a repo secret: **Settings → Secrets and variables → Actions → New repository secret**
+named `CRON_SECRET`, set to the same value as the `CRON_SECRET` env var in Vercel. The Vercel cron
+stays as a once-daily fallback in case the Actions run is skipped or disabled.
+
+GitHub's scheduler is best-effort and can run late under load. That's tolerable here because each
+run re-fetches a trailing window rather than a single day (see "How metrics reach an asset"), so a
+late or skipped run is corrected by the next one instead of leaving a permanent hole.
+
+The header shows how stale the data is ("Synced 2h ago"), flagging anything older than two missed
+cycles, and an open tab re-pulls every hour so a dashboard left up all day doesn't quietly freeze.
 
 ## Adding real campaign IDs
 
@@ -98,6 +127,8 @@ Only campaigns with a `li_campaign_id` set are included in the daily sync.
 | `/api/notifications/read` | POST | `{}` marks all read, `{"clear":true}` deletes all |
 | `/api/cron/sync` | GET/POST | LinkedIn sync, protected by `CRON_SECRET`. `?days=N`, `?start=&end=`, `?campaignId=N`, `?replace=1` |
 | `/api/campaigns/:id?creatives=1` | GET | lists the real LinkedIn ads under a campaign, so an asset can be linked to one |
+| `/api/campaigns/:id?companies=1` | GET | companies that saw this ad set. `?start=&end=`/`?all=1`, `?refresh=1` to bypass the cache |
+| `/api/assets` (POST `{assets:[…]}`) | POST | bulk create for the CSV importer; validates and reports per row |
 | `/api/health` | GET | diagnostics — DB reachability, schema completeness, token validity, last sync |
 | `/api/auth/linkedin/start`, `/callback` | GET | OAuth flow, inert until LinkedIn app is approved |
 
@@ -151,6 +182,81 @@ The account id is the numeric tail of `LINKEDIN_AD_ACCOUNT_URN`.
 production database is provisioned through the Vercel/Neon integration and its connection string is
 marked sensitive — there's no practical way to run `psql` against it by hand. The sync calls it
 before each run. `db/schema.sql` carries the same columns for fresh installs; keep the two in step.
+
+## The same creative across several ad sets
+
+A creative is uploaded once per ad set it runs in, so LinkedIn returns several distinct ads —
+different creative IDs, different campaigns, identical artwork and name. "Beyond e-Invoicing"
+running in both `GLOBAL_US_E-INV_AUG_26` and `Global_UK_E-INV_AUG_26` is two rows in LinkedIn but
+one thing to produce and chase.
+
+Assets are therefore **merged on ad name** wherever they're listed. The merged card carries the
+combined spend/impressions/clicks and a badge naming how many ad sets it spans; tapping the badge
+breaks it down per ad set. Ratios are recomputed from the combined totals (CTR = total clicks over
+total impressions), never averaged across placements — that would weight a 12-impression placement
+the same as a 12,000-impression one.
+
+Grouped on the **name**, not the creative ID: the ID is unique per placement, so it would never
+group anything. The breakdown rolls up per ad set rather than per placement because LinkedIn
+routinely holds several creative IDs for the same artwork inside one ad set — this account has a
+creative appearing 18 times across 7 ad sets, and 18 near-identical lines answer nothing. Where all
+placements sit in one ad set the badge counts placements instead, so it never reads "1 ad sets".
+
+## Which companies saw an ad set
+
+Each campaign row has a **Companies** expander mirroring Campaign Manager's Companies report —
+company name, an engagement level relative to the top company, impressions, clicks and CTR.
+
+This one can't work like the other metrics, for two reasons:
+
+- LinkedIn only serves demographic pivots (`MEMBER_COMPANY` among them) at `timeGranularity=ALL`.
+  There is no per-day breakdown to store and re-slice, so a result is only valid for the exact date
+  range it was requested for — hence `range_start`/`range_end` in the cache key rather than a
+  `metric_date`. Changing the reporting period discards what's loaded rather than showing the
+  previous period's companies under the new heading.
+- The account reports engagement from ~500k companies. Pulling every campaign's list on a schedule
+  would dwarf the rest of the database for data almost nobody opens.
+
+So it's fetched **on demand and cached** (`campaign_company_engagement`), with the top
+`COMPANY_TOP_N` (default 100) companies kept per window and the cache considered fresh for
+`COMPANY_CACHE_TTL_MINUTES` (default 120, matching the sync cadence). `?refresh=1` forces a re-pull.
+If LinkedIn is unreachable and a stale entry exists it's served with a "showing the last good pull"
+marker — a panel saying "as of 4 hours ago" beats one saying nothing.
+
+Company names aren't on the analytics response (the pivot value is a bare `urn:li:organization:…`),
+and the plain `/rest/organizations` lookup needs an organization-admin scope this app doesn't have.
+Names come from `adTargetingEntities?q=urns`, which the ads scopes do cover. Resolution is
+best-effort: an unresolvable company still appears, labelled by its ID.
+
+## Asset library
+
+A third tab holding the asset records on their own — no campaign metrics. Everywhere else an asset
+sits next to its spend, which is right for reporting and wrong for producing: the people filling
+this in care about who owns a brief, when it's due and where the file lives.
+
+It's also the only bulk entry point. Drop a CSV (or click to pick one) and rows are validated in a
+preview before anything is written — unknown countries, missing titles and malformed dates are
+called out by line number. **Template** downloads the expected columns; **Export** dumps the current
+filtered view back out as CSV.
+
+Columns: `title` and `country` are required, everything else optional — `campaign`, `type`,
+`status`, `priority`, `requested_by`, `assigned_to`, `due_date` (YYYY-MM-DD), `version`,
+`asset_link`, `ad_copy_link`, `creative_link`, `notes`. `market`/`name`/`owner`/`due`/`ad_set` are
+accepted as aliases. A campaign named in the CSV that doesn't exist yet is created, the same as
+typing a new campaign name in the "+ Asset" modal.
+
+Rows are inserted independently and failures reported per row rather than aborting the batch: one
+typo'd country in a 200-row spreadsheet shouldn't discard the other 199.
+
+## Home page
+
+Above the country breakdown sits an **overall campaign performance** panel: combined spend,
+impressions, clicks, leads, CTR/CPC/CPM/CPL and the live ad-set count for the selected period, then
+every ad set ranked by spend.
+
+The headline totals cover **all** ad sets in the period while the table lists live ones only, which
+is stated on the panel — spend in the period is spend in the period, whether or not the ad set is
+still running, but "what's running now" is the useful table.
 
 ## How metrics reach an asset
 

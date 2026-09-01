@@ -98,16 +98,21 @@
       <div class="disp" style="font-size:30px; font-weight:800; letter-spacing:-.5px; margin-top:12px; line-height:1.05;">LinkedIn asset tracker</div>
       <div style="font-size:13.5px; color:rgba(255,255,255,.85); margin-top:8px; max-width:580px;">Each country's POC logs and tracks creative assets from brief to live, with ad performance rolled up per market. Shared live across content and performance marketing.</div>
     </div>
-    <div style="display:flex; gap:8px;">
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
       <button class="nav-btn" id="nav-countries-btn">By country</button>
       <button class="nav-btn" id="nav-table-btn">All assets</button>
+      <button class="nav-btn" id="nav-library-btn">Asset library</button>
       <button class="nav-btn" id="nav-bell-btn" style="position:relative; padding:9px 12px;" title="Assignment notifications"></button>
     </div>
   </div>
+  <div id="freshness-pill" style="position:relative; z-index:1; margin-top:14px; font-size:11.5px; color:rgba(255,255,255,.8);"></div>
 </div>
 
-<div id="stats-row" style="display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:14px;"></div>
-<div id="overall-perf" style="margin-bottom:20px;"></div>
+<div id="home-summary">
+  <div id="stats-row" style="display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:14px;"></div>
+  <div id="overall-campaigns" style="margin-bottom:14px;"></div>
+  <div id="overall-perf" style="margin-bottom:20px;"></div>
+</div>
 
 <div id="countries-view">
   <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:16px;">
@@ -120,6 +125,7 @@
 </div>
 
 <div id="table-view" style="display:none;"></div>
+<div id="library-view" style="display:none;"></div>
 <div id="modal-layer"></div>
 
 <script>
@@ -185,14 +191,31 @@
   // Persisted so the choice survives a reload.
   var showAllCampaigns = (function(){ try { return localStorage.getItem('showAllCampaigns')==='1'; } catch(e){ return false; } })();
   var activeAssetTab = {}, tabMainSwipers = {}, tabThumbSwipers = {};
+  // Which merged creatives have their per-ad-set breakdown unfolded, keyed by the merge key.
+  var expandedAssets = {};
   var dateRange = { start:null, end:null };
+  // What the user picked, so the button can say "Q3 2026" rather than re-deriving "Jul 1 – Sep 30".
+  // A range typed on the calendar has no label and falls back to the dates.
+  var dateRangeLabelOverride = '';
   var calendarOpen = false;
+  var calendarMode = 'month';
   var calView = (function(){ var d=new Date(); return { y:d.getFullYear(), m:d.getMonth() }; })();
+  // Year the month/quarter grids are showing. Independent of calView so paging months on the
+  // day-grid doesn't silently move which year the quarter buttons refer to.
+  var periodYear = new Date().getFullYear();
+  // Companies-that-saw-this-ad-set, fetched per campaign on demand: { campaignId: {...} }.
+  var companyPanels = {};
+  var syncHealth = null;
+  var libraryDraftRows = null;
+  var libFilters = { q:'', country:'', status:'' };
 
   function pad2(n){ return String(n).length<2 ? "0"+n : String(n); }
   function isoOf(y,m,d){ return y+"-"+pad2(m+1)+"-"+pad2(d); }
-  function reportingPeriodLabel(){ return (dateRange.start && dateRange.end) ? dateRangeLabel() : "current month"; }
+  function reportingPeriodLabel(){ return dateRangeLabel(); }
   function dateRangeLabel(){
+    // A month or quarter picked by name keeps that name — "Q3 2026" reads better than the
+    // equivalent "Jul 1 – Sep 30", and says which period the numbers are for without arithmetic.
+    if(dateRangeLabelOverride && (dateRangeLabelOverride==='All time' || dateRange.start)) return dateRangeLabelOverride;
     if(!dateRange.start && !dateRange.end) return "All time";
     if(dateRange.start && dateRange.end) return fmtDate(dateRange.start)+" – "+fmtDate(dateRange.end);
     if(dateRange.start) return "From "+fmtDate(dateRange.start);
@@ -280,8 +303,12 @@
   function mapNotifFromApi(n){ return { id:n.id, to:n.to_name, title:n.asset_title, market:n.market_name, ts:new Date(n.created_at).getTime(), read:n.read }; }
 
   async function load(){
+    // Land on the current month rather than all-time: the month-to-date figure is the one people
+    // are reporting on, and an all-time total on first paint reads as wildly overstated spend.
+    if(!dateRange.start && !dateRange.end) applyDatePreset(DATE_PRESETS[0]);
+    var qs = dateRangeQuery();
     try {
-      var results = await Promise.all([api('/api/markets'), api('/api/campaigns'), api('/api/assets'), api('/api/notifications')]);
+      var results = await Promise.all([api('/api/markets'), api('/api/campaigns'+qs), api('/api/assets'+qs), api('/api/notifications')]);
       countries = results[0].map(mapMarketFromApi);
       campaigns = results[1].map(mapCampaignFromApi);
       assets = results[2].map(mapAssetFromApi);
@@ -294,13 +321,19 @@
     countries.forEach(function(c){ if(expanded[c.id]===undefined) expanded[c.id]=true; });
     renderAll(); renderBell();
   }
-  function dateRangeQuery(){ return (dateRange.start && dateRange.end) ? ('?start='+dateRange.start+'&end='+dateRange.end) : ''; }
+  // No range means "All time", and that has to be said explicitly: an empty query string makes the
+  // API fall back to the current month, which used to come back labelled "All time".
+  function dateRangeQuery(){ return (dateRange.start && dateRange.end) ? ('?start='+dateRange.start+'&end='+dateRange.end) : '?all=1'; }
   async function refreshAssets(){ var rows=await api('/api/assets'+dateRangeQuery()); assets=rows.map(mapAssetFromApi); renderAll(); }
   async function refreshCampaigns(){ var rows=await api('/api/campaigns'+dateRangeQuery()); campaigns=rows.map(mapCampaignFromApi); renderAll(); }
   // Reporting period for spend/impressions/etc, same idea as LinkedIn Campaign Manager's date
   // picker — refetches both lists so the numbers reflect the selected window, current month if unset.
   async function reloadForDateRange(){
     var qs=dateRangeQuery();
+    // Company engagement is fetched for one specific window and can't be re-sliced, so anything
+    // already loaded describes the *previous* period — drop it rather than show it under the new
+    // date range's heading.
+    companyPanels={};
     var results=await Promise.all([api('/api/campaigns'+qs), api('/api/assets'+qs)]);
     campaigns=results[0].map(mapCampaignFromApi);
     assets=results[1].map(mapAssetFromApi);
@@ -330,11 +363,15 @@
   }
 
   function renderStats(){
-    var overdue=assets.filter(isOverdue).length;
-    var live=assets.filter(function(a){return a.status==="Live on LinkedIn";}).length;
-    var delivered=assets.filter(function(a){return a.status==="Delivered";}).length;
+    // Counted over merged creatives, matching what the lists below actually show — one creative
+    // running in three ad sets is one thing to produce and chase, not three.
+    var groups=mergeAssets(assets);
+    var overdue=groups.filter(isOverdue).length;
+    var live=groups.filter(function(a){return a.status==="Live on LinkedIn";}).length;
+    var delivered=groups.filter(function(a){return a.status==="Delivered";}).length;
+    var placements=assets.length;
     var cards=[
-      {label:"Total assets", value:assets.length, ic:"stack", color:"var(--indigo)", tint:"var(--indigo-tint)"},
+      {label:"Creatives"+(placements!==groups.length?' · '+placements+' placements':''), value:groups.length, ic:"stack", color:"var(--indigo)", tint:"var(--indigo-tint)"},
       {label:"Overdue", value:overdue, ic:"clock", color: overdue>0?"var(--danger)":"var(--muted)", tint:"var(--danger-tint)"},
       {label:"Delivered", value:delivered, ic:"check", color:"var(--emerald)", tint:"var(--emerald-tint)"},
       {label:"Live on LinkedIn", value:live, ic:"send", color:"var(--linkedin)", tint:"var(--sky-tint)"}
@@ -350,25 +387,49 @@
   function populateStatusFilter(){ var fs=document.getElementById('f-status'); var cur=fs.value; fs.innerHTML='<option value="">All statuses</option>'+STATUS_LIST.map(function(v){return '<option value="'+v+'">'+v+'</option>';}).join(''); fs.value=cur; }
   function matchesFilter(a){ var q=document.getElementById('f-search').value.toLowerCase(); var s=document.getElementById('f-status').value; if(s&&a.status!==s) return false; if(q&&a.title.toLowerCase().indexOf(q)===-1&&a.campaign.toLowerCase().indexOf(q)===-1) return false; return true; }
 
+  var MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  // Last day of a month, as an ISO string. Day 0 of the *next* month is the last of this one,
+  // which sidesteps having to special-case February and leap years.
+  function monthEndIso(y, m){ var d=new Date(y, m+1, 0); return isoOf(y, m, d.getDate()); }
+
+  // Reporting periods never run past today — a month or quarter still in progress reports
+  // month-to-date, the way Campaign Manager does. Without this, picking the current quarter would
+  // ask the API for dates that haven't happened, and the period label would imply the numbers were
+  // final when they're a third of the way in.
+  function clampToToday(iso){ var t=isoToday(); return iso>t ? t : iso; }
+
+  function applyMonth(y, m){
+    dateRange = { start:isoOf(y,m,1), end:clampToToday(monthEndIso(y,m)) };
+    dateRangeLabelOverride = MONTH_NAMES[m]+' '+y;
+  }
+  function applyQuarter(y, q){
+    var startMonth = q*3;
+    dateRange = { start:isoOf(y,startMonth,1), end:clampToToday(monthEndIso(y,startMonth+2)) };
+    dateRangeLabelOverride = 'Q'+(q+1)+' '+y;
+  }
   var DATE_PRESETS = [
-    { label:"This month", thisMonth:true },
-    { label:"All time", all:true }
+    { label:"This month", kind:"thisMonth" },
+    { label:"Last month", kind:"lastMonth" },
+    { label:"This quarter", kind:"thisQuarter" },
+    { label:"Last 7 days", kind:"days", days:7 },
+    { label:"Last 30 days", kind:"days", days:30 },
+    { label:"All time", kind:"all" }
   ];
   function applyDatePreset(p){
-    if(p.all){ dateRange={start:null,end:null}; }
-    else { var d=new Date(); dateRange={ start:isoOf(d.getFullYear(),d.getMonth(),1), end:isoToday() }; }
+    var d = new Date(), y = d.getFullYear(), m = d.getMonth();
+    if(p.kind==='all'){ dateRange={start:null,end:null}; dateRangeLabelOverride='All time'; return; }
+    if(p.kind==='thisMonth'){ applyMonth(y, m); return; }
+    if(p.kind==='lastMonth'){ if(m===0) applyMonth(y-1, 11); else applyMonth(y, m-1); return; }
+    if(p.kind==='thisQuarter'){ applyQuarter(y, Math.floor(m/3)); return; }
+    if(p.kind==='days'){
+      dateRange = { start:addDaysIso(isoToday(), -(p.days-1)), end:isoToday() };
+      dateRangeLabelOverride = 'Last '+p.days+' days';
+    }
   }
-  var DURATION_OPTIONS = [7, 30];
   function addDaysIso(iso, n){
     var p=iso.split("-").map(Number);
     var d=new Date(p[0], p[1]-1, p[2]+n);
     return isoOf(d.getFullYear(), d.getMonth(), d.getDate());
-  }
-  // Applies a fixed-length window starting from whichever day is already picked on the calendar
-  // (or today if none), so "7 days"/"30 days" work from any day the user clicks, not just today.
-  function applyDuration(n){
-    var startIso=dateRange.start||isoToday();
-    dateRange={ start:startIso, end:addDaysIso(startIso, n-1) };
   }
   function calendarGridHtml(){
     var y=calView.y, m=calView.m;
@@ -396,20 +457,55 @@
       + '</div>'
       + '<div style="display:grid; grid-template-columns:repeat(7,30px); gap:4px;">'+cells+'</div>';
   }
+  // Whether a month/quarter button represents the period currently being reported on. Compared on
+  // the start date alone: an in-progress period is clamped to today, so its end won't match the
+  // period's natural end and comparing both would never light up the current month.
+  function isActivePeriod(startIso){ return dateRange.start===startIso; }
+
+  function monthGridHtml(){
+    var cells = MONTH_NAMES.map(function(name, m){
+      var active = isActivePeriod(isoOf(periodYear, m, 1));
+      return '<button type="button" class="period-btn month-btn" data-month="'+m+'" style="padding:8px 0; border-radius:8px; font-size:11.5px; font-family:inherit; cursor:pointer; border:1px solid '+(active?'var(--indigo)':'var(--line)')+'; background:'+(active?'var(--indigo)':'transparent')+'; color:'+(active?'#fff':'var(--ink)')+';">'+name+'</button>';
+    }).join('');
+    return '<div style="display:grid; grid-template-columns:repeat(4,1fr); gap:6px;">'+cells+'</div>';
+  }
+  function quarterGridHtml(){
+    var cells = [0,1,2,3].map(function(q){
+      var active = isActivePeriod(isoOf(periodYear, q*3, 1));
+      var span = MONTH_NAMES[q*3]+'–'+MONTH_NAMES[q*3+2];
+      return '<button type="button" class="period-btn quarter-btn" data-quarter="'+q+'" style="padding:11px 0; border-radius:8px; font-size:12px; font-weight:600; font-family:inherit; cursor:pointer; border:1px solid '+(active?'var(--indigo)':'var(--line)')+'; background:'+(active?'var(--indigo)':'transparent')+'; color:'+(active?'#fff':'var(--ink)')+';">Q'+(q+1)
+        + '<div style="font-size:10px; font-weight:500; opacity:.75; margin-top:2px;">'+span+'</div></button>';
+    }).join('');
+    return '<div style="display:grid; grid-template-columns:repeat(2,1fr); gap:6px;">'+cells+'</div>';
+  }
+  function yearPagerHtml(){
+    return '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">'
+      + '<button type="button" class="btn btn-sm" id="year-prev" style="padding:5px 9px;">‹</button>'
+      + '<div style="font-size:12.5px; font-weight:700;">'+periodYear+'</div>'
+      + '<button type="button" class="btn btn-sm" id="year-next" style="padding:5px 9px;">›</button>'
+      + '</div>';
+  }
+  var CALENDAR_MODES = [ {key:'month',label:'Month'}, {key:'quarter',label:'Quarter'}, {key:'day',label:'Calendar'} ];
+
   function renderDateFilter(){
     var el=document.getElementById('date-filter');
     if(!el) return;
+    var body = calendarMode==='month' ? yearPagerHtml()+monthGridHtml()
+             : calendarMode==='quarter' ? yearPagerHtml()+quarterGridHtml()
+             : '<div style="font-size:10.5px; color:var(--faint); margin-bottom:7px;">Click the first day, then the last.</div>'+calendarGridHtml();
     el.innerHTML = '<button type="button" class="btn btn-sm" id="date-filter-btn">'+icon('calendar',13,'currentColor',1.8)+'<span style="margin-left:6px;">'+dateRangeLabel()+'</span></button>'
       + (calendarOpen ? (
         '<div id="date-filter-popover" class="card" style="position:absolute; top:calc(100% + 6px); left:0; z-index:50; padding:14px; width:264px;">'
-        + '<div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:6px;">'
+        + '<div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px;">'
         + DATE_PRESETS.map(function(p,i){ return '<button type="button" class="btn btn-sm date-preset-btn" data-idx="'+i+'">'+p.label+'</button>'; }).join('')
         + '</div>'
-        + '<div style="font-size:10.5px; color:var(--faint); margin-bottom:5px;">Click a day below, then pick a length:</div>'
-        + '<div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:12px;">'
-        + DURATION_OPTIONS.map(function(n){ return '<button type="button" class="btn btn-sm duration-btn" data-days="'+n+'">'+n+' days</button>'; }).join('')
+        + '<div style="display:grid; grid-template-columns:repeat(3,1fr); gap:4px; padding:3px; background:var(--line-soft); border-radius:9px; margin-bottom:11px;">'
+        + CALENDAR_MODES.map(function(m){
+            var on = calendarMode===m.key;
+            return '<button type="button" class="cal-mode-btn" data-mode="'+m.key+'" style="padding:6px 0; border:none; border-radius:7px; font-size:11.5px; font-weight:600; font-family:inherit; cursor:pointer; background:'+(on?'var(--indigo)':'transparent')+'; color:'+(on?'#fff':'var(--muted)')+';">'+m.label+'</button>';
+          }).join('')
         + '</div>'
-        + calendarGridHtml()
+        + body
         + '<div style="display:flex; justify-content:flex-end; gap:8px; margin-top:12px;">'
         + '<button type="button" class="btn btn-sm" id="date-clear-btn">Clear</button>'
         + '<button type="button" class="btn btn-sm btn-primary" id="date-close-btn">Done</button>'
@@ -418,11 +514,26 @@
     document.getElementById('date-filter-btn').addEventListener('click', function(e){ e.stopPropagation(); calendarOpen=!calendarOpen; renderDateFilter(); });
     if(!calendarOpen) return;
     document.getElementById('date-filter-popover').addEventListener('click', function(e){ e.stopPropagation(); });
-    document.getElementById('cal-prev').addEventListener('click', function(){ calView.m--; if(calView.m<0){calView.m=11; calView.y--;} renderDateFilter(); });
-    document.getElementById('cal-next').addEventListener('click', function(){ calView.m++; if(calView.m>11){calView.m=0; calView.y++;} renderDateFilter(); });
+    document.querySelectorAll('.cal-mode-btn').forEach(function(btn){
+      btn.addEventListener('click', function(){ calendarMode=btn.getAttribute('data-mode'); renderDateFilter(); });
+    });
+    var yp=document.getElementById('year-prev'), yn=document.getElementById('year-next');
+    if(yp) yp.addEventListener('click', function(){ periodYear--; renderDateFilter(); });
+    if(yn) yn.addEventListener('click', function(){ periodYear++; renderDateFilter(); });
+    document.querySelectorAll('.month-btn').forEach(function(btn){
+      btn.addEventListener('click', function(){ applyMonth(periodYear, Number(btn.getAttribute('data-month'))); reloadForDateRange(); });
+    });
+    document.querySelectorAll('.quarter-btn').forEach(function(btn){
+      btn.addEventListener('click', function(){ applyQuarter(periodYear, Number(btn.getAttribute('data-quarter'))); reloadForDateRange(); });
+    });
+    var cp=document.getElementById('cal-prev'), cn=document.getElementById('cal-next');
+    if(cp) cp.addEventListener('click', function(){ calView.m--; if(calView.m<0){calView.m=11; calView.y--;} renderDateFilter(); });
+    if(cn) cn.addEventListener('click', function(){ calView.m++; if(calView.m>11){calView.m=0; calView.y++;} renderDateFilter(); });
     document.querySelectorAll('.cal-day').forEach(function(btn){
       btn.addEventListener('click', function(){
         var iso=btn.getAttribute('data-date');
+        // A hand-picked range has no period name, so drop any month/quarter label still showing.
+        dateRangeLabelOverride='';
         if(!dateRange.start || (dateRange.start && dateRange.end)){ dateRange={ start:iso, end:null }; renderDateFilter(); }
         else if(iso<dateRange.start){ dateRange.start=iso; renderDateFilter(); }
         else { dateRange.end=iso; reloadForDateRange(); }
@@ -431,10 +542,9 @@
     document.querySelectorAll('.date-preset-btn').forEach(function(btn){
       btn.addEventListener('click', function(){ applyDatePreset(DATE_PRESETS[Number(btn.getAttribute('data-idx'))]); reloadForDateRange(); });
     });
-    document.querySelectorAll('.duration-btn').forEach(function(btn){
-      btn.addEventListener('click', function(){ applyDuration(Number(btn.getAttribute('data-days'))); reloadForDateRange(); });
+    document.getElementById('date-clear-btn').addEventListener('click', function(){
+      dateRange={start:null,end:null}; dateRangeLabelOverride=''; reloadForDateRange();
     });
-    document.getElementById('date-clear-btn').addEventListener('click', function(){ dateRange={start:null,end:null}; reloadForDateRange(); });
     document.getElementById('date-close-btn').addEventListener('click', function(){
       if(dateRange.start && !dateRange.end){ dateRange.end=dateRange.start; reloadForDateRange(); }
       calendarOpen=false; renderDateFilter();
@@ -478,6 +588,114 @@
       + '</div>';
   }
 
+  // ---- home page: overall campaign performance ----
+  //
+  // The landing view answered "how is each country doing" but never "how are we doing overall" —
+  // that total had to be added up by eye across six country rows. Everything here is campaign-level
+  // (not a sum of tracked assets) for the same reason the per-market rollups are: a campaign can
+  // run ads nobody has logged as an asset yet.
+  function totalsFor(list){
+    var t={spend:0,impressions:0,clicks:0,reach:0,leads:0};
+    list.forEach(function(c){ METRIC_FIELDS.forEach(function(f){ t[f]+=num(c[f]); }); });
+    return t;
+  }
+  function liveCampaigns(){ return campaigns.filter(isCampaignLive); }
+
+  function bigMetricTile(label, value, sub, color){
+    return '<div style="background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:12px 14px;">'
+      + '<div style="font-size:10.5px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:.05em;">'+label+'</div>'
+      + '<div class="disp" style="font-size:21px; font-weight:800; margin-top:5px; line-height:1;'+(color?' color:'+color+';':'')+'">'+value+'</div>'
+      + (sub?'<div style="font-size:10.5px; color:var(--faint); margin-top:4px;">'+sub+'</div>':'')
+      + '</div>';
+  }
+
+  function renderOverallCampaigns(){
+    var el=document.getElementById('overall-campaigns');
+    if(!el) return;
+    var live=liveCampaigns();
+    var all=campaigns;
+    var t=totalsFor(all);
+    var d=derived(t);
+    var linked=all.filter(function(c){return c.liCampaignId;}).length;
+
+    var tiles=[
+      bigMetricTile('Total spend', fmtMoney(t.spend), reportingPeriodLabel(), 'var(--emerald)'),
+      bigMetricTile('Impressions', fmtInt(t.impressions), fmtInt(t.reach)+' reach'),
+      bigMetricTile('Clicks', fmtInt(t.clicks), fmtPct(d.ctr)+' CTR'),
+      bigMetricTile('Leads', fmtInt(t.leads), num(t.leads)>0?fmtDec(d.cpl)+' CPL':'no leads yet', 'var(--indigo)'),
+      bigMetricTile('CPC', fmtDec(d.cpc), fmtDec(d.cpm)+' CPM'),
+      bigMetricTile('Live ad sets', live.length, all.length+' total · '+linked+' linked', live.length?'var(--emerald)':'var(--muted)')
+    ].join('');
+
+    // Ranked by spend: the question this table answers is "where is the money going", and the
+    // campaign list is long enough that alphabetical order buries the ones that matter.
+    var ranked=(showAllCampaigns?all:(live.length?live:all)).slice().sort(function(a,b){ return num(b.spend)-num(a.spend); });
+    var rows=ranked.map(function(c){
+      var cd=derived(c);
+      var state=campaignStateLabel(c);
+      return '<tr style="border-bottom:1px solid var(--line-soft);">'
+        + '<td style="padding:9px 12px;"><div style="font-weight:600;">'+esc(c.name)+'</div>'
+        + '<div style="font-size:10.5px; color:var(--faint);">'+flagFor(c.marketName)+' '+esc(c.marketName||'—')+'</div></td>'
+        + '<td style="padding:9px 12px;"><span class="chip" style="'+(state.tone==='live'?'background:rgba(52,199,123,.16); color:#5BD99A;':state.tone==='hold'?'background:rgba(240,180,60,.15); color:#E3B341;':'background:var(--line-soft); color:var(--faint);')+'">'+esc(state.text)+'</span></td>'
+        + '<td style="padding:9px 12px; text-align:right;">'+fmtMoney(c.spend)+'</td>'
+        + '<td style="padding:9px 12px; text-align:right;">'+fmtInt(c.impressions)+'</td>'
+        + '<td style="padding:9px 12px; text-align:right;">'+fmtInt(c.clicks)+'</td>'
+        + '<td style="padding:9px 12px; text-align:right;">'+fmtPct(cd.ctr)+'</td>'
+        + '<td style="padding:9px 12px; text-align:right;">'+fmtDec(cd.cpc)+'</td>'
+        + '<td style="padding:9px 12px; text-align:right;">'+fmtInt(c.leads)+'</td>'
+        + '</tr>';
+    }).join('');
+    var heads=[['Ad set',0],['State',0],['Spend',1],['Impr',1],['Clicks',1],['CTR',1],['CPC',1],['Leads',1]];
+
+    el.innerHTML='<div class="card fadein" style="padding:15px 17px;">'
+      + '<div class="section-title" style="margin:0 0 4px;">'+icon('target',14,'var(--indigo)',1.8)+' Overall campaign performance <span style="color:var(--faint); font-weight:600; text-transform:none; letter-spacing:0;">· '+reportingPeriodLabel()+'</span></div>'
+      // Spelt out because the table underneath lists live ad sets only, and the totals above it do
+      // not — spend in the period is spend in the period, whether or not the ad set is still running.
+      + '<div style="font-size:11px; color:var(--faint); margin-bottom:11px;">Totals cover all '+all.length+' ad sets in the period, including ones no longer running.</div>'
+      + '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:9px; margin-bottom:14px;">'+tiles+'</div>'
+      + '<div style="font-size:10.5px; color:var(--faint); font-weight:700; text-transform:uppercase; letter-spacing:.04em; margin-bottom:6px;">'
+      + (showAllCampaigns||!live.length ? 'All ad sets' : 'Live ad sets')+' by spend</div>'
+      + '<div class="scroll-x"><table style="width:100%; border-collapse:collapse; font-size:12.5px; min-width:720px;">'
+      + '<thead><tr style="border-bottom:1px solid var(--line);">'
+      + heads.map(function(h){ return '<th style="text-align:'+(h[1]?'right':'left')+'; padding:8px 12px; font-size:10.5px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:.04em;">'+h[0]+'</th>'; }).join('')
+      + '</tr></thead><tbody>'+(rows||'<tr><td colspan="8" style="padding:20px; text-align:center; color:var(--faint);">No campaigns yet</td></tr>')+'</tbody></table></div>'
+      + '</div>';
+  }
+
+  // How stale the numbers are. The sync runs every 2 hours; when it stops running the symptom is
+  // numbers that simply stop moving, which looks identical to a quiet week — so say it outright.
+  async function refreshSyncHealth(){
+    try { syncHealth = await api('/api/health'); } catch(e){ syncHealth = { error:e.message }; }
+    renderFreshness();
+  }
+  function renderFreshness(){
+    var el=document.getElementById('freshness-pill');
+    if(!el) return;
+    if(!syncHealth){ el.innerHTML=''; return; }
+    if(syncHealth.error){
+      el.innerHTML='<span class="chip" style="background:rgba(255,92,97,.2); color:#FFB4B6;">Backend unreachable — '+esc(syncHealth.error)+'</span>';
+      return;
+    }
+    var last=syncHealth.sync && syncHealth.sync.last;
+    var bits=[];
+    if(last){
+      var age=Date.now()-new Date(last.run_at).getTime();
+      // Two missed cycles rather than one: GitHub's scheduler routinely runs a few minutes late,
+      // and flagging that as a failure would cry wolf every other day.
+      var late=age > 4*3600*1000;
+      bits.push('<span class="chip" style="background:rgba(255,255,255,'+(late?'.28':'.18')+'); color:#fff;">'
+        + (late?'⚠ ':'')+'Synced '+timeAgo(new Date(last.run_at).getTime())
+        + (last.status!=='ok'?' · '+esc(last.status):'')+'</span>');
+    } else {
+      bits.push('<span class="chip" style="background:rgba(255,255,255,.18); color:#fff;">Never synced</span>');
+    }
+    bits.push('<span style="opacity:.75;">Refreshes every 2 hours · '+esc((syncHealth.linkedin&&syncHealth.linkedin.mode)||'?')+' mode</span>');
+    if(syncHealth.warnings && syncHealth.warnings.length){
+      bits.push('<span class="chip" style="background:rgba(240,180,60,.28); color:#FFE1A3;" title="'+esc(syncHealth.warnings.join(' | '))+'">'+syncHealth.warnings.length+' warning'+(syncHealth.warnings.length===1?'':'s')+'</span>');
+    }
+    el.innerHTML='<div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">'+bits.join('')+'</div>';
+  }
+
   function metricList(o){
     var d=derived(o);
     return [['cost',fmtMoney(o.spend)],['clicks',fmtInt(o.clicks)],['impr',fmtInt(o.impressions)],['cpc',fmtDec(d.cpc)],['reach',fmtInt(o.reach)],['leads',fmtInt(o.leads)]];
@@ -487,16 +705,53 @@
       + metricList(a).map(function(x){ return '<span class="chip"><b>'+x[1]+'</b> '+x[0]+'</span>'; }).join('') + '</div>';
   }
 
-  function assetRowHtml(a, sameNameCount){
+  // The breakdown behind a merged creative, one line per ad set.
+  //
+  // Rolled up by campaign rather than listed per placement: LinkedIn routinely holds several
+  // creative IDs for the same artwork inside one ad set (this account has a creative appearing 18
+  // times across 7 ad sets), and 18 near-identical lines answer nothing. Per ad set is the level
+  // the question is actually asked at.
+  function mergedBreakdownHtml(g){
+    var byCampaign = {}, order = [];
+    g.parts.forEach(function(p){
+      var k = p.campaign || '—';
+      if(!byCampaign[k]){ byCampaign[k]={ campaign:k, market:p.market, placements:0, firstId:p.id, spend:0, impressions:0, clicks:0, reach:0, leads:0 }; order.push(k); }
+      var b = byCampaign[k];
+      b.placements++;
+      METRIC_FIELDS.forEach(function(f){ b[f] += num(p[f]); });
+    });
+    var rows = order.sort(function(a,b){ return byCampaign[b].spend - byCampaign[a].spend; }).map(function(k){
+      var b = byCampaign[k];
+      var d = derived(b);
+      return '<div class="merged-part" data-id="'+b.firstId+'" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:7px 0; border-top:1px dashed var(--line-soft); cursor:pointer;">'
+        + '<span class="chip" style="background:var(--indigo-tint); color:#AAB2FF;">'+icon('target',11,'currentColor',1.8)+esc(b.campaign)+'</span>'
+        + '<span style="font-size:11px; color:var(--faint);">'+flagFor(b.market)+' '+esc(b.market||'')
+        + (b.placements>1?' · '+b.placements+' placements':'')+'</span>'
+        + '<span style="margin-left:auto; display:flex; gap:6px; flex-wrap:wrap;">'
+        + '<span class="chip"><b>'+fmtMoney(b.spend)+'</b> spend</span>'
+        + '<span class="chip"><b>'+fmtInt(b.impressions)+'</b> impr</span>'
+        + '<span class="chip"><b>'+fmtInt(b.clicks)+'</b> clicks</span>'
+        + '<span class="chip"><b>'+fmtPct(d.ctr)+'</b> CTR</span>'
+        + '</span></div>';
+    }).join('');
+    return '<div style="margin-top:9px; padding-top:2px;">'
+      + '<div style="font-size:10.5px; color:var(--faint); font-weight:700; text-transform:uppercase; letter-spacing:.04em; margin-bottom:2px;">Running in '+order.length+' ad set'+(order.length===1?'':'s')
+      + (g.parts.length!==order.length?' · '+g.parts.length+' placements':'')+'</div>'
+      + rows + '</div>';
+  }
+
+  function assetRowHtml(a){
     var overdue=isOverdue(a);
     var col=STATUS_COLOR[a.status]||STATUS_COLOR["Requested"];
-    var sharedName = sameNameCount>1;
+    var merged = a.merged;
+    var open = merged && expandedAssets[a.key];
     return '<div class="card asset-card fadein" data-id="'+a.id+'" style="padding:13px 15px; margin-bottom:9px; cursor:pointer; border-color:'+(overdue?'rgba(255,92,97,.55)':'var(--line)')+';">'
       + '<div style="display:flex; gap:12px; align-items:flex-start;">'
       + typeTile(a.type)
       + '<div style="flex:1; min-width:0;">'
       + '<div style="display:flex; justify-content:space-between; gap:10px; align-items:flex-start; flex-wrap:wrap;">'
-      + '<div style="min-width:180px; flex:1;"><div style="font-size:13.5px; font-weight:600; line-height:1.25;">'+esc(a.title)+(sharedName?' <span class="chip" style="background:var(--violet-tint); color:#C9BFFF; vertical-align:middle;" title="This ad name is reused on '+sameNameCount+' separate campaigns/creatives in LinkedIn — these are distinct ads, not duplicates.">'+icon('stack',11,'currentColor',1.8)+sameNameCount+'× this name</span>':'')+'</div>'
+      + '<div style="min-width:180px; flex:1;"><div style="font-size:13.5px; font-weight:600; line-height:1.25;">'+esc(a.title)
+      + (merged?' <button type="button" class="merge-toggle chip" data-key="'+esc(a.key)+'" style="background:var(--violet-tint); color:#C9BFFF; vertical-align:middle; border:none; font-family:inherit; cursor:pointer;" title="The same creative running as '+a.parts.length+' ads across '+adSetCount(a)+' ad set(s). Numbers below are the combined total.">'+icon('stack',11,'currentColor',1.8)+'merged from '+mergeLabel(a)+' '+(open?'▴':'▾')+'</button>':'')+'</div>'
       + '<span class="chip" style="margin-top:6px; background:var(--indigo-tint); color:#AAB2FF;">'+icon('target',12,'currentColor',1.8)+esc(a.campaign||'—')+'</span></div>'
       + '<div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">'
       + '<span class="badge" style="background:'+col.bg+'; color:'+col.fg+';">'+a.status+'</span>'
@@ -511,7 +766,74 @@
       + (a.creativeLink?'<a href="'+esc(a.creativeLink)+'" target="_blank" rel="noopener" class="meta" style="'+((a.link||a.adCopyLink)?'':'margin-left:auto; ')+'color:var(--violet); text-decoration:none; font-weight:600;" onclick="event.stopPropagation();">'+icon('image',13,'currentColor',1.8)+'Creatives</a>':'')
       + '</div>'
       + metricChips(a)
+      + (open ? mergedBreakdownHtml(a) : '')
       + '</div></div></div>';
+  }
+
+  // ---- merging the same creative across campaigns ----
+  //
+  // The same creative is uploaded once per ad set it runs in, so LinkedIn hands back several
+  // distinct ads — different creative IDs, different campaigns, identical artwork and name (e.g.
+  // "Beyond e-Invoicing" running in both GLOBAL_US_E-INV_AUG_26 and Global_UK_E-INV_AUG_26). Listed
+  // separately they read as duplicates and their spend has to be added up by hand to answer "how
+  // did this creative do".
+  //
+  // Grouped on the ad name, which is what the creative is actually identified by in Campaign
+  // Manager, rather than the creative ID (unique per placement, so it would never group anything).
+  function assetGroupKey(a){ return (a.title||'').trim().toLowerCase(); }
+
+  // How many distinct ad sets a merged creative runs in — not the same as how many placements it
+  // has, since one ad set can hold several creative IDs for the same artwork.
+  function adSetCount(g){ return Math.max(g.campaignNames.length, 1); }
+
+  // What the merge badge says. A creative uploaded twice into the *same* ad set is still a merge
+  // worth showing, but calling it "1 ad set" reads like a mistake — name the placements instead.
+  function mergeLabel(g){
+    var n = adSetCount(g);
+    return n > 1 ? n+' ad sets' : g.parts.length+' placements';
+  }
+
+  // Ratios can't be summed — CTR of the merged creative is total clicks over total impressions,
+  // not the average of each placement's CTR, which would weight a 12-impression ad the same as a
+  // 12,000-impression one.
+  function mergeAssets(list){
+    var byKey = {};
+    var order = [];
+    list.forEach(function(a){
+      var k = assetGroupKey(a);
+      if(!byKey[k]){
+        byKey[k] = {
+          key:k, title:a.title, type:a.type, primary:a, parts:[],
+          spend:0, impressions:0, clicks:0, reach:0, leads:0,
+          campaignNames:[], marketNames:[], statuses:[]
+        };
+        order.push(k);
+      }
+      var g = byKey[k];
+      g.parts.push(a);
+      METRIC_FIELDS.forEach(function(f){ g[f] += num(a[f]); });
+      if(a.campaign && g.campaignNames.indexOf(a.campaign)===-1) g.campaignNames.push(a.campaign);
+      if(a.market && g.marketNames.indexOf(a.market)===-1) g.marketNames.push(a.market);
+      if(g.statuses.indexOf(a.status)===-1) g.statuses.push(a.status);
+    });
+    return order.map(function(k){
+      var g = byKey[k];
+      // Everything the single-asset renderers read comes off the primary, with the summed metrics
+      // laid over it — so a merged group is drop-in compatible with an unmerged asset.
+      g.merged = g.parts.length > 1;
+      g.id = g.primary.id;
+      g.campaign = g.campaignNames.join(' · ');
+      g.market = g.primary.market;
+      g.marketId = g.primary.marketId;
+      // Any placement still live makes the creative live; otherwise take the furthest-along status.
+      g.status = g.statuses.indexOf('Live on LinkedIn')!==-1 ? 'Live on LinkedIn' : g.primary.status;
+      g.assignedTo = g.primary.assignedTo; g.dueDate = g.primary.dueDate;
+      g.dateDelivered = g.primary.dateDelivered;
+      g.version = g.primary.version; g.link = g.primary.link;
+      g.adCopyLink = g.primary.adCopyLink; g.creativeLink = g.primary.creativeLink;
+      g.metricsSource = g.primary.metricsSource;
+      return g;
+    });
   }
 
   function campaignsForMarket(marketId){ return campaigns.filter(function(c){return c.marketId===marketId;}); }
@@ -546,6 +868,86 @@
     if(num(cam.leads)>0) chips.push(['CPL', fmtDec(d.cpl)]);
     return chips.map(function(x){ return '<span class="chip"><b>'+x[1]+'</b> '+x[0]+'</span>'; }).join('');
   }
+  // ---- which companies have seen this ad set ----
+  //
+  // Mirrors Campaign Manager's Companies report. Fetched per campaign on demand rather than on the
+  // sync: LinkedIn only serves this pivot as one aggregate for a date range (no daily breakdown to
+  // store and re-slice), and the account reports engagement from hundreds of thousands of
+  // companies, so pulling it for every campaign on a schedule would cost far more than it's worth.
+  async function loadCompaniesFor(campaignId, refresh){
+    companyPanels[campaignId] = { loading:true };
+    renderAll();
+    try {
+      var qs = dateRangeQuery() + (refresh ? '&refresh=1' : '');
+      var data = await api('/api/campaigns/'+campaignId+'?companies=1&'+qs.slice(1));
+      companyPanels[campaignId] = { loading:false, open:true, data:data };
+    } catch(e){
+      companyPanels[campaignId] = { loading:false, open:true, error:e.message };
+    }
+    renderAll();
+  }
+
+  function engagementLevel(company, top){
+    if(!top) return { label:'Low', filled:1 };
+    var share = num(company.impressions)/top;
+    if(share >= 0.5) return { label:'High', filled:4 };
+    if(share >= 0.2) return { label:'Medium', filled:3 };
+    if(share >= 0.05) return { label:'Low', filled:2 };
+    return { label:'Minimal', filled:1 };
+  }
+  function engagementBars(level){
+    var segs='';
+    for(var i=0;i<4;i++){
+      segs += '<span style="display:inline-block; width:11px; height:5px; border-radius:2px; margin-right:2px; background:'+(i<level.filled?'var(--indigo)':'var(--line)')+';"></span>';
+    }
+    return segs;
+  }
+
+  function companiesPanelHtml(cam){
+    var state = companyPanels[cam.id];
+    if(!state) return '';
+    if(state.loading){
+      return '<div style="padding:12px 0; font-size:11.5px; color:var(--faint);">Loading the companies that saw this ad set…</div>';
+    }
+    if(state.error){
+      return '<div style="padding:12px 0; font-size:11.5px; color:var(--danger);">'+esc(state.error)+'</div>';
+    }
+    var list = (state.data && state.data.companies) || [];
+    if(!list.length){
+      return '<div style="padding:12px 0; font-size:11.5px; color:var(--faint);">LinkedIn reported no company engagement for this ad set in '+esc(reportingPeriodLabel())+'.</div>';
+    }
+    var top = num(list[0].impressions);
+    var shown = state.showAll ? list : list.slice(0, 10);
+    var rows = shown.map(function(co){
+      var lvl = engagementLevel(co, top);
+      var d = derived(co);
+      return '<tr style="border-bottom:1px solid var(--line-soft);">'
+        + '<td style="padding:8px 10px; font-weight:600;">'+esc(co.name || ('Company '+co.companyId))+'</td>'
+        + '<td style="padding:8px 10px; white-space:nowrap;">'+engagementBars(lvl)+' <span style="font-size:10.5px; color:var(--muted); margin-left:4px;">'+lvl.label+'</span></td>'
+        + '<td style="padding:8px 10px; text-align:right;">'+fmtInt(co.impressions)+'</td>'
+        + '<td style="padding:8px 10px; text-align:right;">'+fmtInt(co.clicks)+'</td>'
+        + '<td style="padding:8px 10px; text-align:right;">'+fmtPct(d.ctr)+'</td>'
+        + '</tr>';
+    }).join('');
+    var fetched = state.data && state.data.fetchedAt ? timeAgo(new Date(state.data.fetchedAt).getTime()) : '';
+    return '<div style="padding:10px 0 4px;">'
+      + '<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:7px;">'
+      + '<div style="font-size:10.5px; color:var(--faint); font-weight:700; text-transform:uppercase; letter-spacing:.04em;">Companies that saw this ad set · '+esc(reportingPeriodLabel())+'</div>'
+      + '<span class="chip">'+list.length+' companies</span>'
+      + (state.data && state.data.stale ? '<span class="chip" style="background:var(--amber-tint); color:#F6C860;" title="'+esc(state.data.error||'')+'">LinkedIn unreachable — showing the last good pull</span>' : '')
+      + (fetched?'<span style="font-size:10.5px; color:var(--faint);">as of '+fetched+'</span>':'')
+      + '<button class="btn btn-sm refresh-companies-btn" data-campaign="'+cam.id+'" style="margin-left:auto;">Refresh</button>'
+      + '</div>'
+      + '<div class="scroll-x"><table style="width:100%; border-collapse:collapse; font-size:12px; min-width:460px;">'
+      + '<thead><tr style="border-bottom:1px solid var(--line);">'
+      + [['Company',0],['Engagement',0],['Impr',1],['Clicks',1],['CTR',1]].map(function(h){
+          return '<th style="text-align:'+(h[1]?'right':'left')+'; padding:7px 10px; font-size:10px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:.04em;">'+h[0]+'</th>';
+        }).join('')
+      + '</tr></thead><tbody>'+rows+'</tbody></table></div>'
+      + (list.length>10 ? '<button class="btn btn-sm toggle-companies-btn" data-campaign="'+cam.id+'" style="margin-top:8px;">'+(state.showAll?'Show top 10':'Show all '+list.length)+'</button>' : '')
+      + '</div>';
+  }
+
   function campaignsPanelHtml(c){
     var all = campaignsForMarket(c.id);
     var list = visibleCampaignsForMarket(c.id);
@@ -553,6 +955,8 @@
     var rows = list.map(function(cam){
       var m = campaignMetricsRow(cam);
       var state = campaignStateLabel(cam);
+      var companyState = companyPanels[cam.id];
+      var companyOpen = Boolean(companyState && (companyState.open || companyState.loading));
       var meta = [];
       if(cam.objective) meta.push(esc(cam.objective.replace(/_/g,' ').toLowerCase()));
       if(cam.dailyBudget!=null) meta.push('budget '+fmtMoney(cam.dailyBudget)+'/day');
@@ -569,10 +973,12 @@
         + (state.tone==='live'?'<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#34C77B;margin-right:5px;"></span>':'')
         + esc(state.text)+'</span></div>'
         + '<div style="font-size:11px; color:var(--faint);">'+(cam.liCampaignId?esc(cam.liCampaignId):'No LinkedIn campaign ID yet')+(m.source?' · '+(m.source==='sync'?'synced':'manual'):'')+(meta.length?' · '+meta.join(' · '):'')+'</div></div>'
+        + '<button class="btn btn-sm companies-btn" data-campaign="'+cam.id+'"'+(cam.liCampaignId?'':' disabled title="Needs a LinkedIn campaign ID"')+'>'+icon('user',12,'currentColor',1.8)+' Companies'+(companyOpen?' ▴':' ▾')+'</button>'
         + '<button class="btn btn-sm log-metrics-btn" data-campaign="'+cam.id+'" data-campaign-name="'+esc(cam.name)+'">Log numbers</button>'
         + '<button class="btn btn-sm edit-campaign-btn" data-campaign="'+cam.id+'">Edit</button>'
         + '</div>'
         + '<div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;">'+campaignMetricChips(cam)+'</div>'
+        + (companyOpen ? companiesPanelHtml(cam) : '')
         + '</div>';
     }).join('');
     var emptyMsg = all.length
@@ -591,11 +997,14 @@
   }
 
   function assetsPanelHtml(c, filtered, list){
-    var titleCounts = {};
-    list.forEach(function(x){ var k=(x.title||'').trim().toLowerCase(); titleCounts[k]=(titleCounts[k]||0)+1; });
+    // Merged after filtering, so a search that matches the creative still shows its full combined
+    // total rather than only the placements whose campaign name happened to match too.
+    var groups = mergeAssets(filtered);
+    var mergedCount = groups.filter(function(g){return g.merged;}).length;
     return '<div style="background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:13px 15px;">'
       + (c.link?'<div style="font-size:11.5px; color:var(--muted); margin-bottom:11px;" class="meta">'+icon('folder',13,'var(--faint)',1.8)+'<a href="'+esc(c.link)+'" target="_blank" rel="noopener">Shared folder</a> · via '+esc(c.channel||'—')+'</div>':'')
-      + (filtered.length ? filtered.map(function(a){ return assetRowHtml(a, titleCounts[(a.title||'').trim().toLowerCase()]); }).join('')
+      + (mergedCount?'<div style="font-size:11px; color:var(--faint); margin-bottom:10px;">'+icon('stack',12,'currentColor',1.8)+' '+mergedCount+' creative'+(mergedCount===1?'':'s')+' run in more than one ad set — their numbers are combined. Tap the badge to break it down.</div>':'')
+      + (groups.length ? groups.map(function(a){ return assetRowHtml(a); }).join('')
           : '<div style="text-align:center; padding:22px 8px; color:var(--faint);"><div class="icobox" style="justify-content:center;">'+icon(list.length?'search':'inbox',26,'var(--faint)',1.6)+'</div><div style="font-size:12.5px; margin-top:8px;">'+(list.length?'No assets match the current filter.':'No assets yet. Hit “+ Asset” to log the first one.')+'</div></div>')
       + '</div>';
   }
@@ -605,7 +1014,7 @@
     return '<div class="swiper tab-thumb-swiper" data-id="'+c.id+'">'
       + '<div class="swiper-wrapper">'
       + '<div class="swiper-slide"><button type="button" class="tab-pill">'+icon('target',13,'currentColor',1.8)+'Campaigns <span class="tab-pill-count">'+campaignCount+'</span></button></div>'
-      + '<div class="swiper-slide"><button type="button" class="tab-pill">'+icon('stack',13,'currentColor',1.8)+'Assets <span class="tab-pill-count">'+list.length+'</span></button></div>'
+      + '<div class="swiper-slide"><button type="button" class="tab-pill">'+icon('stack',13,'currentColor',1.8)+'Assets <span class="tab-pill-count">'+mergeAssets(list).length+'</span></button></div>'
       + '</div></div>'
       + '<div class="swiper tab-main-swiper" data-id="'+c.id+'">'
       + '<div class="swiper-wrapper">'
@@ -628,7 +1037,7 @@
       + '<div style="min-width:150px;"><div class="disp" style="font-size:16px; font-weight:700;">'+esc(c.country)+'</div>'
       + '<div style="font-size:11.5px; color:var(--muted);">'+esc(c.pocName||'—')+'</div></div>'
       + '<div style="display:flex; gap:6px; flex-wrap:wrap; flex:1;">'
-      + '<span class="chip"><b>'+list.length+'</b> assets</span>'
+      + '<span class="chip"><b>'+mergeAssets(list).length+'</b> assets</span>'
       + '<span class="chip" style="background:var(--emerald-tint); color:#6EE7C0;">'+icon('dollar',12,'currentColor',1.8)+'<b>'+fmtMoney(t.spend)+'</b></span>'
       + '<span class="chip" style="background:var(--indigo-tint); color:#AAB2FF;">'+icon('magnet',12,'currentColor',1.8)+'<b>'+fmtInt(t.leads)+'</b> leads</span>'
       + '<span class="chip" style="background:var(--sky-tint); color:#7FD0F5;">'+icon('send',12,'currentColor',1.8)+'<b>'+live+'</b> live</span>'
@@ -647,15 +1056,53 @@
       + '</div></div>';
   }
 
+  // The card itself opens the asset; the merge badge and the per-ad-set lines inside it do their
+  // own thing, so both stop the click before it reaches the card.
+  function bindAssetCards(root){
+    root.querySelectorAll('.asset-card').forEach(function(el){
+      el.addEventListener('click', function(e){
+        if(e.target.closest('.merge-toggle') || e.target.closest('.merged-part')) return;
+        openAssetModal(Number(el.getAttribute('data-id')));
+      });
+    });
+    root.querySelectorAll('.merge-toggle').forEach(function(el){
+      el.addEventListener('click', function(e){
+        e.stopPropagation();
+        var k=el.getAttribute('data-key');
+        expandedAssets[k] = !expandedAssets[k];
+        renderAll();
+      });
+    });
+    root.querySelectorAll('.merged-part').forEach(function(el){
+      el.addEventListener('click', function(e){ e.stopPropagation(); openAssetModal(Number(el.getAttribute('data-id'))); });
+    });
+  }
+
   function renderCountryBlocks(){
     document.getElementById('country-blocks').innerHTML = countries.map(countryBlockHtml).join('') || '<div style="color:var(--faint); font-size:13px;">No countries yet.</div>';
     document.querySelectorAll('.country-header').forEach(function(el){ el.addEventListener('click', function(e){ if(e.target.closest('.edit-country-btn')||e.target.closest('.add-asset-btn')||e.target.closest('a')) return; var id=el.getAttribute('data-id'); expanded[id]=!(expanded[id]!==false); renderCountryBlocks(); }); });
     document.querySelectorAll('.edit-country-btn').forEach(function(el){ el.addEventListener('click', function(e){ e.stopPropagation(); openCountryModal(Number(el.getAttribute('data-id'))); }); });
     document.querySelectorAll('.add-asset-btn').forEach(function(el){ el.addEventListener('click', function(e){ e.stopPropagation(); openAssetModal(null, Number(el.getAttribute('data-market'))); }); });
-    document.querySelectorAll('.asset-card').forEach(function(el){ el.addEventListener('click', function(){ openAssetModal(Number(el.getAttribute('data-id'))); }); });
+    bindAssetCards(document);
     document.querySelectorAll('.log-metrics-btn').forEach(function(el){ el.addEventListener('click', function(e){ e.stopPropagation(); openMetricsModal(Number(el.getAttribute('data-campaign')), el.getAttribute('data-campaign-name')); }); });
     document.querySelectorAll('.edit-campaign-btn').forEach(function(el){ el.addEventListener('click', function(e){ e.stopPropagation(); openCampaignModal(Number(el.getAttribute('data-campaign'))); }); });
     document.querySelectorAll('.add-campaign-btn').forEach(function(el){ el.addEventListener('click', function(e){ e.stopPropagation(); openCampaignModal(null, Number(el.getAttribute('data-market'))); }); });
+    document.querySelectorAll('.companies-btn').forEach(function(el){ el.addEventListener('click', function(e){
+      e.stopPropagation();
+      var id=Number(el.getAttribute('data-campaign'));
+      var state=companyPanels[id];
+      // Collapse without discarding: reopening within the cache TTL shouldn't re-hit LinkedIn.
+      if(state && state.open){ state.open=false; renderAll(); return; }
+      if(state && state.data){ state.open=true; renderAll(); return; }
+      loadCompaniesFor(id, false);
+    }); });
+    document.querySelectorAll('.refresh-companies-btn').forEach(function(el){ el.addEventListener('click', function(e){ e.stopPropagation(); loadCompaniesFor(Number(el.getAttribute('data-campaign')), true); }); });
+    document.querySelectorAll('.toggle-companies-btn').forEach(function(el){ el.addEventListener('click', function(e){
+      e.stopPropagation();
+      var id=Number(el.getAttribute('data-campaign'));
+      if(companyPanels[id]) companyPanels[id].showAll = !companyPanels[id].showAll;
+      renderAll();
+    }); });
     document.querySelectorAll('.toggle-all-campaigns').forEach(function(el){ el.addEventListener('click', function(e){ e.stopPropagation(); }); el.addEventListener('change', function(){
       showAllCampaigns = el.checked;
       try { localStorage.setItem('showAllCampaigns', showAllCampaigns?'1':'0'); } catch(e){}
@@ -686,14 +1133,20 @@
   }
 
   function renderTableView(){
-    var filtered=assets.filter(matchesFilter);
+    var filtered=mergeAssets(assets.filter(matchesFilter));
     var rows=filtered.map(function(a){
       var col=STATUS_COLOR[a.status]||STATUS_COLOR["Requested"];
       var overdue=isOverdue(a); var d=derived(a);
       var cfg=TYPE_CFG[a.type]||{ic:"document",color:"var(--muted)"};
+      // A merged creative can span markets, so name every one it ran in rather than picking one.
+      var markets = a.marketNames.length>1
+        ? a.marketNames.map(function(n){ return flagFor(n); }).join(' ')+' '+a.marketNames.length+' markets'
+        : flagFor(a.market)+' '+esc(a.market||'—');
       return '<tr class="table-row" data-id="'+a.id+'" style="cursor:pointer; border-bottom:1px solid var(--line-soft);">'
-        + '<td style="padding:11px 12px;">'+flagFor(a.market)+' '+esc(a.market)+'</td>'
-        + '<td style="padding:11px 12px; font-weight:600;">'+esc(a.title)+'</td>'
+        + '<td style="padding:11px 12px;">'+markets+'</td>'
+        + '<td style="padding:11px 12px; font-weight:600;">'+esc(a.title)
+        + (a.merged?' <span class="chip" style="background:var(--violet-tint); color:#C9BFFF;" title="Combined across '+a.parts.length+' placements in: '+esc(a.campaignNames.join(', '))+'">'+icon('stack',11,'currentColor',1.8)+mergeLabel(a)+'</span>':'')
+        + '</td>'
         + '<td style="padding:11px 12px;"><span class="meta" style="color:'+cfg.color+';">'+icon(cfg.ic,14,'currentColor',1.8)+'<span style="color:var(--ink);">'+esc(a.type)+'</span></span></td>'
         + '<td style="padding:11px 12px;"><span class="badge" style="background:'+col.bg+'; color:'+col.fg+';">'+a.status+'</span>'+(overdue?' <span class="badge" style="background:var(--danger-tint); color:var(--danger);">Late</span>':'')+'</td>'
         + '<td style="padding:11px 12px;">'+esc(a.assignedTo||'—')+'</td>'
@@ -716,7 +1169,285 @@
     document.querySelectorAll('#table-view .table-row').forEach(function(el){ el.addEventListener('click', function(){ openAssetModal(Number(el.getAttribute('data-id'))); }); });
   }
 
-  function renderAll(){ renderDateFilter(); renderStats(); renderOverall(); populateStatusFilter(); if(currentTab==='countries') renderCountryBlocks(); else renderTableView(); }
+  // ---- asset library: the asset records on their own ----
+  //
+  // Deliberately metric-free. Everywhere else in the app an asset is shown next to its spend and
+  // impressions, which is the right framing for reporting but the wrong one for producing: the
+  // people filling this in care about who owns a brief, when it's due and where the file lives.
+  // This is also the only bulk entry point — the rest of the app creates assets one modal at a time.
+
+  var CSV_COLUMNS = [
+    { key:'title',        header:'title',         required:true },
+    { key:'country',      header:'country',       required:true },
+    { key:'campaign',     header:'campaign' },
+    { key:'type',         header:'type' },
+    { key:'status',       header:'status' },
+    { key:'priority',     header:'priority' },
+    { key:'requestedBy',  header:'requested_by' },
+    { key:'assignedTo',   header:'assigned_to' },
+    { key:'dueDate',      header:'due_date' },
+    { key:'version',      header:'version' },
+    { key:'link',         header:'asset_link' },
+    { key:'adCopyLink',   header:'ad_copy_link' },
+    { key:'creativeLink', header:'creative_link' },
+    { key:'notes',        header:'notes' }
+  ];
+
+  // A hand-rolled parser rather than a library: the page has no build step and one more CDN script
+  // is one more thing that can fail to load. Handles quoted fields containing commas, escaped
+  // quotes ("") and both newline conventions, which covers what Excel and Sheets actually emit.
+  function parseCSV(text){
+    var rows=[], row=[], field='', inQuotes=false;
+    text = text.replace(/^﻿/, ''); // Excel writes a BOM; it would otherwise corrupt the first header
+    for(var i=0;i<text.length;i++){
+      var ch=text[i];
+      if(inQuotes){
+        if(ch==='"'){
+          if(text[i+1]==='"'){ field+='"'; i++; }
+          else inQuotes=false;
+        } else field+=ch;
+        continue;
+      }
+      if(ch==='"'){ inQuotes=true; continue; }
+      if(ch===','){ row.push(field); field=''; continue; }
+      if(ch==='\r'){ continue; }
+      if(ch==='\n'){ row.push(field); rows.push(row); row=[]; field=''; continue; }
+      field+=ch;
+    }
+    if(field.length || row.length){ row.push(field); rows.push(row); }
+    return rows.filter(function(r){ return r.some(function(c){ return String(c).trim()!==''; }); });
+  }
+
+  function normaliseHeader(h){ return String(h||'').trim().toLowerCase().replace(/[\s-]+/g,'_'); }
+
+  // Maps a parsed CSV into asset payloads, resolving country and campaign names to IDs. Rows that
+  // can't be resolved are kept with an `error` rather than dropped, so the preview can show exactly
+  // which line to fix instead of silently importing fewer rows than the file had.
+  function csvToRows(text){
+    var grid=parseCSV(text);
+    if(!grid.length) return { rows:[], error:'That file has no rows in it.' };
+    var headers=grid[0].map(normaliseHeader);
+    // Accept the friendlier spellings people actually type in a spreadsheet.
+    var ALIASES = { market:'country', name:'title', asset:'title', owner:'assigned_to', assignee:'assigned_to', due:'due_date', ad_set:'campaign', adset:'campaign' };
+    headers=headers.map(function(h){ return ALIASES[h]||h; });
+    if(headers.indexOf('title')===-1) return { rows:[], error:'The file needs a "title" column.' };
+    if(headers.indexOf('country')===-1) return { rows:[], error:'The file needs a "country" (or "market") column.' };
+
+    var byHeader={};
+    CSV_COLUMNS.forEach(function(c){ byHeader[c.header]=c.key; });
+
+    var out=grid.slice(1).map(function(cells, i){
+      var rec={ _line:i+2 };
+      headers.forEach(function(h, idx){
+        var key=byHeader[h];
+        if(key) rec[key]=String(cells[idx]==null?'':cells[idx]).trim();
+      });
+      var country=countries.find(function(c){ return c.country.toLowerCase()===String(rec.country||'').toLowerCase(); });
+      if(!rec.title) rec.error='missing title';
+      else if(!country) rec.error='unknown country "'+(rec.country||'')+'"';
+      else rec.marketId=country.id;
+      if(rec.type && TYPE_LIST.indexOf(rec.type)===-1) rec.type='';
+      if(rec.status && STATUS_LIST.indexOf(rec.status)===-1) rec.status='';
+      if(rec.dueDate && !/^\d{4}-\d{2}-\d{2}$/.test(rec.dueDate)) { rec.dueDate=''; rec.warning='due date ignored (needs YYYY-MM-DD)'; }
+      return rec;
+    });
+    return { rows:out };
+  }
+
+  function csvTemplate(){
+    return CSV_COLUMNS.map(function(c){return c.header;}).join(',')+'\n'
+      + '"Beyond e-Invoicing",Global,GLOBAL_US_E-INV_AUG_26,Document,Briefed,High,Tanya Gupta,Anna,2026-09-15,v1,https://drive.google.com/...,,,"Doc ad for the UK finance audience"\n';
+  }
+  function downloadFile(name, text, mime){
+    var blob=new Blob([text], { type:mime||'text/csv;charset=utf-8;' });
+    var url=URL.createObjectURL(blob);
+    var a=document.createElement('a');
+    a.href=url; a.download=name;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+  }
+  function csvCell(v){
+    var s=String(v==null?'':v);
+    return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s;
+  }
+  function exportLibraryCsv(){
+    var list=libraryRows();
+    var lines=[CSV_COLUMNS.map(function(c){return c.header;}).join(',')];
+    list.forEach(function(a){
+      lines.push([a.title, a.market, a.campaign, a.type, a.status, a.priority||'', a.requestedBy||'',
+        a.assignedTo||'', a.dueDate||'', a.version||'', a.link||'', a.adCopyLink||'', a.creativeLink||'', a.notes||'']
+        .map(csvCell).join(','));
+    });
+    downloadFile('assets.csv', lines.join('\n'));
+  }
+
+  async function commitImport(rows){
+    var usable=rows.filter(function(r){ return !r.error; });
+    if(!usable.length){ showToast('Nothing to import — every row has a problem.'); return; }
+    // Campaign names are resolved (and created when new) one at a time before the bulk insert,
+    // because the bulk endpoint takes campaign IDs — it has no way to invent campaigns safely.
+    for(var i=0;i<usable.length;i++){
+      var r=usable[i];
+      if(r.campaign){
+        try { r.campaignId=await resolveCampaignId(r.marketId, r.campaign); }
+        catch(e){ r.campaignId=null; }
+      }
+    }
+    var payload=usable.map(function(r){
+      return {
+        title:r.title, type:r.type||'Image', marketId:r.marketId, campaignId:r.campaignId||null,
+        requestedBy:r.requestedBy||null, assignedTo:r.assignedTo||null, priority:r.priority||'Medium',
+        dueDate:r.dueDate||null, status:r.status||'Requested', version:r.version||'v1',
+        link:r.link||null, adCopyLink:r.adCopyLink||null, creativeLink:r.creativeLink||null,
+        notes:r.notes||null
+      };
+    });
+    var result=await api('/api/assets', { method:'POST', body: JSON.stringify({ assets: payload }) });
+    await Promise.all([refreshAssets(), refreshCampaigns(), refreshNotifications()]);
+    libraryDraftRows=null;
+    closeModal();
+    var msg=result.created+' asset'+(result.created===1?'':'s')+' imported';
+    if(result.failed) msg+=' · '+result.failed+' failed ('+esc(result.errors.slice(0,3).map(function(e){return 'row '+e.row+': '+e.error;}).join('; '))+')';
+    showToast(msg+'.');
+  }
+
+  function openImportModal(text){
+    var parsed=csvToRows(text);
+    if(parsed.error){ showToast(parsed.error); return; }
+    libraryDraftRows=parsed.rows;
+    var good=parsed.rows.filter(function(r){return !r.error;}).length;
+    var bad=parsed.rows.length-good;
+    var preview=parsed.rows.slice(0, 50).map(function(r){
+      return '<tr style="border-bottom:1px solid var(--line-soft);'+(r.error?' background:rgba(255,92,97,.07);':'')+'">'
+        + '<td style="padding:6px 8px; color:var(--faint);">'+r._line+'</td>'
+        + '<td style="padding:6px 8px;">'+esc(r.title||'—')+'</td>'
+        + '<td style="padding:6px 8px;">'+esc(r.country||'—')+'</td>'
+        + '<td style="padding:6px 8px;">'+esc(r.campaign||'—')+'</td>'
+        + '<td style="padding:6px 8px; color:'+(r.error?'var(--danger)':'var(--faint)')+';">'+esc(r.error||r.warning||'ok')+'</td>'
+        + '</tr>';
+    }).join('');
+    var body='<div style="font-size:12px; color:var(--muted); margin-bottom:10px;">'
+      + '<b>'+good+'</b> row'+(good===1?'':'s')+' ready to import'+(bad?', <b style="color:var(--danger);">'+bad+'</b> with problems (skipped)':'')+'.'
+      + (parsed.rows.length>50?' Showing the first 50.':'')+'</div>'
+      + '<div class="scroll-x" style="max-height:44vh; overflow-y:auto;"><table style="width:100%; border-collapse:collapse; font-size:11.5px; min-width:520px;">'
+      + '<thead><tr style="border-bottom:1px solid var(--line);">'
+      + ['Line','Title','Country','Ad set','Status'].map(function(h){ return '<th style="text-align:left; padding:6px 8px; font-size:10px; color:var(--muted); font-weight:700; text-transform:uppercase;">'+h+'</th>'; }).join('')
+      + '</tr></thead><tbody>'+preview+'</tbody></table></div>';
+    showModal('Import assets from CSV', body, async function(){
+      await commitImport(libraryDraftRows||[]);
+      // commitImport closes the modal itself once the refreshes are in, so don't close twice.
+      return false;
+    });
+    var saveBtn=document.getElementById('modal-save-btn');
+    if(saveBtn) saveBtn.textContent='Import '+good+' asset'+(good===1?'':'s');
+  }
+
+  function libraryRows(){
+    var q=libFilters.q.toLowerCase(), st=libFilters.status, mk=libFilters.country;
+    return assets.filter(function(a){
+      if(st && a.status!==st) return false;
+      if(mk && String(a.marketId)!==String(mk)) return false;
+      if(q && a.title.toLowerCase().indexOf(q)===-1 && (a.campaign||'').toLowerCase().indexOf(q)===-1
+           && (a.assignedTo||'').toLowerCase().indexOf(q)===-1) return false;
+      return true;
+    });
+  }
+
+  function renderLibraryView(){
+    var el=document.getElementById('library-view');
+    if(!el) return;
+    var list=libraryRows();
+    var rows=list.map(function(a){
+      var col=STATUS_COLOR[a.status]||STATUS_COLOR['Requested'];
+      var cfg=TYPE_CFG[a.type]||{ic:'document',color:'var(--muted)'};
+      var overdue=isOverdue(a);
+      var links=[
+        a.link?'<a href="'+esc(a.link)+'" target="_blank" rel="noopener" title="Asset file" onclick="event.stopPropagation();" style="color:var(--ink);">'+icon('folder',13,'currentColor',1.8)+'</a>':'',
+        a.adCopyLink?'<a href="'+esc(a.adCopyLink)+'" target="_blank" rel="noopener" title="Ad copy" onclick="event.stopPropagation();" style="color:var(--amber);">'+icon('copy',13,'currentColor',1.8)+'</a>':'',
+        a.creativeLink?'<a href="'+esc(a.creativeLink)+'" target="_blank" rel="noopener" title="Creative" onclick="event.stopPropagation();" style="color:var(--violet);">'+icon('image',13,'currentColor',1.8)+'</a>':''
+      ].filter(Boolean).join(' ') || '<span style="color:var(--faint);">—</span>';
+      return '<tr class="lib-row" data-id="'+a.id+'" style="cursor:pointer; border-bottom:1px solid var(--line-soft);">'
+        + '<td style="padding:10px 12px; white-space:nowrap;">'+flagFor(a.market)+' '+esc(a.market||'—')+'</td>'
+        + '<td style="padding:10px 12px; font-weight:600;">'+esc(a.title)+'</td>'
+        + '<td style="padding:10px 12px;"><span class="meta" style="color:'+cfg.color+';">'+icon(cfg.ic,13,'currentColor',1.8)+'<span style="color:var(--ink);">'+esc(a.type)+'</span></span></td>'
+        + '<td style="padding:10px 12px; color:var(--muted);">'+esc(a.campaign||'—')+'</td>'
+        + '<td style="padding:10px 12px;"><span class="badge" style="background:'+col.bg+'; color:'+col.fg+';">'+a.status+'</span></td>'
+        + '<td style="padding:10px 12px;">'+esc(a.assignedTo||'—')+'</td>'
+        + '<td style="padding:10px 12px;'+(overdue?' color:var(--danger); font-weight:600;':'')+'">'+(a.dueDate?fmtDate(a.dueDate):'—')+'</td>'
+        + '<td style="padding:10px 12px;">'+esc(a.version||'—')+'</td>'
+        + '<td style="padding:10px 12px; white-space:nowrap;">'+links+'</td>'
+        + '</tr>';
+    }).join('');
+    var heads=['Country','Title','Type','Ad set','Status','Assigned','Due','Ver','Files'];
+
+    el.innerHTML='<div class="card fadein" style="padding:17px 19px; margin-bottom:14px;">'
+      + '<div style="display:flex; gap:12px; align-items:flex-start; justify-content:space-between; flex-wrap:wrap;">'
+      + '<div><div class="disp" style="font-size:17px; font-weight:700;">Asset library</div>'
+      + '<div style="font-size:12.5px; color:var(--muted); margin-top:5px; max-width:560px;">Every asset record on its own — no campaign metrics. Add one at a time, or upload a spreadsheet to log a whole batch.</div></div>'
+      + '<div style="display:flex; gap:8px; flex-wrap:wrap;">'
+      + '<button class="btn btn-sm" id="lib-template-btn">'+icon('document',13,'currentColor',1.8)+' Template</button>'
+      + '<button class="btn btn-sm" id="lib-export-btn">'+icon('ext',13,'currentColor',1.8)+' Export</button>'
+      + '<button class="btn btn-sm" id="lib-import-btn">'+icon('folder',13,'currentColor',1.8)+' Upload CSV</button>'
+      + '<button class="btn btn-primary btn-sm" id="lib-add-btn">+ New asset</button>'
+      + '</div></div>'
+      + '<input type="file" id="lib-file" accept=".csv,text/csv" style="display:none;" />'
+      + '<div id="lib-drop" style="margin-top:14px; border:1.5px dashed var(--line); border-radius:12px; padding:16px; text-align:center; font-size:12px; color:var(--faint); cursor:pointer;">'
+      + 'Drop a CSV here, or click to choose one. Columns: '+CSV_COLUMNS.map(function(c){return c.header;}).join(', ')+'.'
+      + '</div></div>'
+      + '<div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:14px;">'
+      + '<input id="lib-search" placeholder="Search title, ad set or assignee" style="flex:1; min-width:220px;" />'
+      + '<select id="lib-country" style="width:auto; min-width:150px;"><option value="">All countries</option>'
+      + countries.map(function(c){ return '<option value="'+c.id+'">'+esc(c.country)+'</option>'; }).join('')+'</select>'
+      + '<select id="lib-status" style="width:auto; min-width:160px;"><option value="">All statuses</option>'
+      + STATUS_LIST.map(function(s){ return '<option value="'+s+'">'+s+'</option>'; }).join('')+'</select>'
+      + '<span style="font-size:11.5px; color:var(--faint);">'+list.length+' of '+assets.length+' records</span>'
+      + '</div>'
+      + '<div class="card scroll-x fadein" style="padding:0; overflow:hidden;">'
+      + '<table style="width:100%; border-collapse:collapse; font-size:12.5px; min-width:900px;">'
+      + '<thead><tr style="background:#12161F; border-bottom:1px solid var(--line);">'
+      + heads.map(function(h){ return '<th style="text-align:left; padding:11px 12px; font-size:11px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:.04em;">'+h+'</th>'; }).join('')
+      + '</tr></thead><tbody>'+(rows||'<tr><td colspan="9" style="padding:26px; text-align:center; color:var(--faint);">No asset records'+(assets.length?' match these filters':' yet')+'</td></tr>')+'</tbody></table></div>';
+
+    // Filter values are re-read from the DOM on each render, so restore what was typed.
+    document.getElementById('lib-search').value=libFilters.q;
+    document.getElementById('lib-country').value=libFilters.country;
+    document.getElementById('lib-status').value=libFilters.status;
+    document.getElementById('lib-search').addEventListener('input', function(e){ libFilters.q=e.target.value; renderLibraryView(); document.getElementById('lib-search').focus(); });
+    document.getElementById('lib-country').addEventListener('change', function(e){ libFilters.country=e.target.value; renderLibraryView(); });
+    document.getElementById('lib-status').addEventListener('change', function(e){ libFilters.status=e.target.value; renderLibraryView(); });
+
+    var fileInput=document.getElementById('lib-file');
+    var drop=document.getElementById('lib-drop');
+    function readFile(f){
+      if(!f) return;
+      var reader=new FileReader();
+      reader.onload=function(){ openImportModal(String(reader.result||'')); };
+      reader.onerror=function(){ showToast('Could not read that file.'); };
+      reader.readAsText(f);
+    }
+    fileInput.addEventListener('change', function(){ readFile(fileInput.files[0]); fileInput.value=''; });
+    document.getElementById('lib-import-btn').addEventListener('click', function(){ fileInput.click(); });
+    drop.addEventListener('click', function(){ fileInput.click(); });
+    drop.addEventListener('dragover', function(e){ e.preventDefault(); drop.style.borderColor='var(--indigo)'; });
+    drop.addEventListener('dragleave', function(){ drop.style.borderColor='var(--line)'; });
+    drop.addEventListener('drop', function(e){
+      e.preventDefault(); drop.style.borderColor='var(--line)';
+      readFile(e.dataTransfer.files && e.dataTransfer.files[0]);
+    });
+    document.getElementById('lib-template-btn').addEventListener('click', function(){ downloadFile('asset-template.csv', csvTemplate()); });
+    document.getElementById('lib-export-btn').addEventListener('click', exportLibraryCsv);
+    document.getElementById('lib-add-btn').addEventListener('click', function(){ openAssetModal(null, countries.length?countries[0].id:null); });
+    el.querySelectorAll('.lib-row').forEach(function(row){
+      row.addEventListener('click', function(){ openAssetModal(Number(row.getAttribute('data-id'))); });
+    });
+  }
+
+  function renderAll(){
+    renderDateFilter(); populateStatusFilter(); renderFreshness();
+    if(currentTab==='library'){ renderLibraryView(); return; }
+    renderStats(); renderOverallCampaigns(); renderOverall();
+    if(currentTab==='countries') renderCountryBlocks(); else renderTableView();
+  }
 
   function field(l,h){ return '<div style="margin-bottom:13px;"><label>'+l+'</label>'+h+'</div>'; }
   // Says where an asset's numbers actually came from. 'campaign' means the asset has no LinkedIn
@@ -993,13 +1724,20 @@
     });
   }
 
+  var NAV_TABS = [
+    { tab:'countries', view:'countries-view', btn:'nav-countries-btn' },
+    { tab:'table',     view:'table-view',     btn:'nav-table-btn' },
+    { tab:'library',   view:'library-view',   btn:'nav-library-btn' }
+  ];
   function setNav(tab){
     currentTab=tab;
-    document.getElementById('countries-view').style.display=(tab==='countries')?'block':'none';
-    document.getElementById('table-view').style.display=(tab==='table')?'block':'none';
-    var cb=document.getElementById('nav-countries-btn'), tb=document.getElementById('nav-table-btn');
-    if(tab==='countries'){ cb.className='nav-btn btn-active'; tb.className='nav-btn'; }
-    else { tb.className='nav-btn btn-active'; cb.className='nav-btn'; }
+    NAV_TABS.forEach(function(t){
+      document.getElementById(t.view).style.display = (tab===t.tab) ? 'block' : 'none';
+      document.getElementById(t.btn).className = (tab===t.tab) ? 'nav-btn btn-active' : 'nav-btn';
+    });
+    // The library is about records, not reporting — the spend summary above it would just be
+    // noise, and its date range doesn't apply to anything the tab shows.
+    document.getElementById('home-summary').style.display = (tab==='library') ? 'none' : 'block';
     renderAll();
   }
 
@@ -1009,12 +1747,27 @@
   document.getElementById('add-country-btn').addEventListener('click', function(){ openCountryModal(null); });
   document.getElementById('nav-countries-btn').addEventListener('click', function(){ setNav('countries'); });
   document.getElementById('nav-table-btn').addEventListener('click', function(){ setNav('table'); });
+  document.getElementById('nav-library-btn').addEventListener('click', function(){ setNav('library'); });
   document.getElementById('f-search').addEventListener('input', renderAll);
   document.getElementById('f-status').addEventListener('change', renderAll);
   document.addEventListener('click', function(){ if(calendarOpen){ calendarOpen=false; renderDateFilter(); } });
 
+  // The sync writes new numbers every 2 hours; a tab left open all day would otherwise keep showing
+  // whatever was true when it was loaded. Half-cycle polling so a page is never more than an hour
+  // behind the database regardless of where in the cycle it was opened. Skipped while a modal is
+  // open — re-rendering underneath someone mid-edit would throw away what they'd typed.
+  var AUTO_REFRESH_MS = 60*60*1000;
+  setInterval(function(){
+    if(document.hidden) return;
+    if(document.getElementById('modal-layer').innerHTML) return;
+    reloadForDateRange().catch(function(){});
+    refreshNotifications().catch(function(){});
+    refreshSyncHealth();
+  }, AUTO_REFRESH_MS);
+
   setNav('countries');
   load();
+  refreshSyncHealth();
 })();
 </script>
 </div>

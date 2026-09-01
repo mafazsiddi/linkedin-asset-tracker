@@ -1,0 +1,34 @@
+name: LinkedIn sync (every 2 hours)
+
+on:
+  schedule:
+    # Every 2 hours on the hour. GitHub's scheduler is best-effort and can run late under load,
+    # which is fine here: each run re-fetches a trailing window (SYNC_WINDOW_DAYS) rather than just
+    # the current day, so a skipped or delayed run is corrected by the next one instead of leaving
+    # a permanent hole in the month-to-date totals.
+    - cron: '0 */2 * * *'
+  workflow_dispatch: {}
+
+# A slow sync overlapping the next scheduled run would have two passes upserting the same rows.
+# They'd converge (the upserts are idempotent), but the log noise makes real failures harder to
+# spot, so queue them instead.
+concurrency:
+  group: linkedin-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call /api/cron/sync
+        run: |
+          status=$(curl -s -o /tmp/response.json -w '%{http_code}' \
+            -X GET \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            https://linkedin-asset-tracker.vercel.app/api/cron/sync)
+          echo "HTTP status: $status"
+          cat /tmp/response.json
+          if [ "$status" -ge 300 ]; then
+            echo "Sync failed"
+            exit 1
+          fi
