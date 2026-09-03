@@ -140,6 +140,20 @@ create table if not exists campaign_audience_breakdown (
   unique (campaign_id, range_start, range_end, dimension, entity_urn)
 );
 
+-- Records that a window was fetched, whatever came back. Cached rows can't carry this: an ad set
+-- with no company or title data above LinkedIn's privacy threshold caches zero rows, and without a
+-- marker "nothing cached" is indistinguishable from "never fetched" — so every empty window re-hit
+-- LinkedIn on every panel open.
+create table if not exists campaign_audience_fetch (
+  id serial primary key,
+  campaign_id integer not null references campaigns(id) on delete cascade,
+  range_start date not null,
+  range_end date not null,
+  kind text not null check (kind in ('companies', 'audience')),
+  fetched_at timestamptz not null default now(),
+  unique (campaign_id, range_start, range_end, kind)
+);
+
 create table if not exists notifications (
   id serial primary key,
   to_name text not null,

@@ -247,11 +247,21 @@ sync cadence). `?refresh=1` forces a re-pull. If LinkedIn is unreachable and a s
 it's served with a "showing the last good pull" marker — a panel saying "as of 4 hours ago" beats
 one saying nothing.
 
-The job function and title pivots are two further requests against an endpoint that throttles on
-metric values returned per 5 minutes, and they answer a softer question than the company list does.
-So they're fetched after the companies, sequentially, and a failure there falls back to the last
-cached breakdown and is reported in the panel rather than costing the caller the companies it
-actually asked for.
+Freshness lives in its own table, `campaign_audience_fetch`, rather than being inferred from the
+cached rows. "LinkedIn reported nothing" is a legitimate and common answer here — values below the
+privacy threshold are dropped entirely — so with row presence as the signal, an empty window is
+indistinguishable from one never fetched. Every open re-hit LinkedIn, and the widen-to-90-days
+retry below made that twice per open.
+
+`?companies=1` and `?audience=1` are separate requests on separate caches, and the panel fires them
+together: the company table paints as soon as it lands and the job function/title tables fill in
+underneath. Bundling them made the list wait on a title pivot nobody was looking at yet. If the
+breakdown fails or times out the companies are unaffected — the panel says so in place of the two
+tables.
+
+Both cache writes are single multi-row inserts. Writing a row at a time meant ~100 sequential round
+trips to a pooled Neon instance a few hundred milliseconds away, which was most of the time the
+panel took to open — a cold load went from 106 database round trips to 4.
 
 Names aren't on the analytics response — every pivot value is a bare URN
 (`urn:li:organization:…`, `urn:li:function:…`, `urn:li:title:…`) — and the obvious per-type

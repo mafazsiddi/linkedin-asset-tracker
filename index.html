@@ -979,18 +979,28 @@
     return Math.round((Date.parse(win.end+'T00:00:00Z')-Date.parse(win.start+'T00:00:00Z'))/86400000)+1;
   }
 
-  function fetchCompanies(campaignId, win, refresh){
-    return api('/api/campaigns/'+campaignId+'?companies=1&start='+win.start+'&end='+win.end
+  function fetchAudienceData(campaignId, kind, win, refresh){
+    return api('/api/campaigns/'+campaignId+'?'+kind+'=1&start='+win.start+'&end='+win.end
       + (refresh ? '&refresh=1' : ''));
   }
+  function fetchCompanies(campaignId, win, refresh){
+    return fetchAudienceData(campaignId, 'companies', win, refresh);
+  }
+  function fetchFacets(campaignId, win, refresh){
+    return fetchAudienceData(campaignId, 'audience', win, refresh);
+  }
 
+  // Companies and the job function/title breakdowns are independent queries on independent caches,
+  // so they're requested together and the company table is painted the moment it arrives rather
+  // than waiting on the slower of the two. The breakdown fills in underneath when it lands.
   async function loadCompaniesFor(campaignId, refresh){
     companyPanels[campaignId] = { loading:true };
     renderAll();
+    var win = companyWindowFor(dateRange);
+    var facetsP = fetchFacets(campaignId, win, refresh).catch(function(e){ return { error:e.message }; });
     try {
-      var win = companyWindowFor(dateRange);
       var data = await fetchCompanies(campaignId, win, refresh);
-      var state = { loading:false, open:true, data:data, window:win };
+      var state = { loading:false, open:true, data:data, window:win, facetsLoading:true };
       // Retry over a wider window rather than leaving a dead end. Labelled in the panel, never
       // silent — showing 90 days of companies under a "Sep 2026" heading would be a lie.
       if(!data.companies.length && daysBetween(win) < COMPANY_FALLBACK_DAYS){
@@ -998,13 +1008,26 @@
         var fallback = await fetchCompanies(campaignId, wide, refresh);
         if(fallback.companies.length){
           state.data = fallback; state.window = wide; state.widenedFrom = win;
+          // The in-flight breakdown is for the window that came back empty, so it's the wrong
+          // answer now. Discard it and ask again for the window actually being shown.
+          facetsP = fetchFacets(campaignId, wide, refresh).catch(function(e){ return { error:e.message }; });
         }
       }
       companyPanels[campaignId] = state;
+      renderAll();
+
+      var facets = await facetsP;
+      // The panel may have been closed, refreshed or re-ranged while this was in flight; only
+      // attach the result if it still belongs to what's on screen.
+      if(companyPanels[campaignId] === state){
+        state.facets = facets;
+        state.facetsLoading = false;
+        renderAll();
+      }
     } catch(e){
       companyPanels[campaignId] = { loading:false, open:true, error:e.message };
+      renderAll();
     }
-    renderAll();
   }
 
   function companyWindowLabel(state){
@@ -1135,23 +1158,36 @@
   }
 
   function audienceBreakdownHtml(cam, state){
-    var functions = (state.data && state.data.jobFunctions) || [];
-    var titles = (state.data && state.data.jobTitles) || [];
-    var err = (state.data && state.data.breakdownError) || '';
+    var wrap = function(inner){
+      return '<div style="margin-top:14px; padding-top:12px; border-top:1px dashed var(--line-soft);">'
+        + inner + '</div>';
+    };
+    if(state.facetsLoading){
+      return wrap('<div style="font-size:11.5px; color:var(--faint);">Loading job function and job title…</div>');
+    }
+    var facets = state.facets;
+    if(!facets) return '';
+    var functions = facets.jobFunctions || [];
+    var titles = facets.jobTitles || [];
+    var err = facets.error || '';
     if(!functions.length && !titles.length && !err) return '';
-    return '<div style="margin-top:14px; padding-top:12px; border-top:1px dashed var(--line-soft);">'
-      + '<div style="font-size:11px; color:var(--faint); line-height:1.5; margin-bottom:9px;">'
+    return wrap(
+      '<div style="font-size:11px; color:var(--faint); line-height:1.5; margin-bottom:9px;">'
       + 'Job function and job title for this ad set as a whole. '
       + 'LinkedIn reports one audience dimension at a time, so these <b>can\'t be broken down per company</b> — '
       + 'they cover the same '+esc(companyWindowLabel(state))+' window as the list above.'
       + (err
-          ? '<br><span style="color:#E3B341;">Couldn\'t refresh these just now ('+esc(err)+') — showing the last good pull.</span>'
+          ? '<br><span style="color:#E3B341;">Couldn\'t load these just now ('+esc(err)+').</span>'
+          : '')
+      + (facets.stale
+          ? '<br><span style="color:#F6C860;">LinkedIn unreachable — showing the last good pull.</span>'
           : '')
       + '</div>'
       + '<div style="display:flex; gap:18px; flex-wrap:wrap;">'
       + facetTableHtml(cam, 'Job function', functions, 'jobFunctions', state.showAllFunctions)
       + facetTableHtml(cam, 'Job title', titles, 'jobTitles', state.showAllTitles)
-      + '</div></div>';
+      + '</div>'
+    );
   }
 
   function campaignsPanelHtml(c){

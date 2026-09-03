@@ -3,7 +3,7 @@ const { json, methodNotAllowed, currentMonthRange, withHandler } = require('../.
 const { CAMPAIGN_SELECT, reportingRange } = require('../../lib/queries');
 const { backfillCampaign } = require('../../lib/backfill');
 const { listCampaignCreatives } = require('../../lib/linkedin');
-const { companiesForCampaign } = require('../../lib/companies');
+const { companiesForCampaign, audienceForCampaign } = require('../../lib/companies');
 const { ensureSchema } = require('../../lib/migrate');
 const { DEAD_STATUSES: DEAD_CREATIVE_STATUSES } = require('../../lib/importer');
 
@@ -11,10 +11,15 @@ module.exports = withHandler(async function handler(req, res) {
   const id = Number(req.query.id);
 
   // GET /api/campaigns/:id?companies=1[&start=&end=][&refresh=1] — the companies that have seen
-  // this ad set, mirroring Campaign Manager's Companies report. Rides on this route for the same
-  // reason ?creatives=1 does: the Hobby plan caps a deployment at 12 Serverless Functions and
-  // api/ is already at exactly 12.
-  if (req.method === 'GET' && req.query.companies) {
+  // this ad set, mirroring Campaign Manager's Companies report.
+  // GET /api/campaigns/:id?audience=1[…]                        — the job function and job title
+  // breakdowns for the same window.
+  //
+  // Two entry points rather than one payload because they're independent LinkedIn queries and the
+  // panel paints the company table first: bundling them made the list wait on a title pivot nobody
+  // was looking at yet. Both ride on this route for the same reason ?creatives=1 does — the Hobby
+  // plan caps a deployment at 12 Serverless Functions and api/ is already at exactly 12.
+  if (req.method === 'GET' && (req.query.companies || req.query.audience)) {
     const { rows } = await query('select * from campaigns where id = $1', [id]);
     if (!rows.length) return json(res, 404, { error: 'Not found' });
     const campaign = rows[0];
@@ -23,13 +28,12 @@ module.exports = withHandler(async function handler(req, res) {
         error: `Campaign "${campaign.name}" has no LinkedIn campaign ID set, so its audience can't be looked up.`
       });
     }
-    // The cache table arrived after the first deploys, and production can't be reached with psql —
-    // so make sure it exists before reading through it.
+    // The cache tables arrived after the first deploys, and production can't be reached with psql —
+    // so make sure they exist before reading through them.
     await ensureSchema();
     const { start, end } = reportingRange(req);
-    const result = await companiesForCampaign(campaign, start, end, {
-      refresh: Boolean(req.query.refresh)
-    });
+    const load = req.query.audience ? audienceForCampaign : companiesForCampaign;
+    const result = await load(campaign, start, end, { refresh: Boolean(req.query.refresh) });
     return json(res, 200, Object.assign({ campaignId: id, window: { start, end } }, result));
   }
 
