@@ -1058,6 +1058,7 @@
         + '<td style="white-space:nowrap;">'+engagementBars(lvl)+' <span style="font-size:10.5px; color:var(--muted); margin-left:4px;">'+lvl.label+'</span></td>'
         + '<td class="num">'+fmtInt(co.impressions)+'</td>'
         + '<td class="num">'+fmtInt(co.clicks)+'</td>'
+        + '<td class="num">'+fmtInt(co.engagements)+'</td>'
         + '<td class="num">'+fmtPct(d.ctr)+'</td>'
         + '</tr>';
     }).join('');
@@ -1071,14 +1072,86 @@
       + (fetched?'<span style="font-size:10.5px; color:var(--faint);">as of '+fetched+'</span>':'')
       + '<button class="btn btn-sm refresh-companies-btn" data-campaign="'+cam.id+'" style="margin-left:auto;">Refresh</button>'
       + '</div>'
-      + '<div class="scroll-x"><table class="data-table" style="min-width:460px; font-size:12.5px;">'
+      + '<div class="scroll-x"><table class="data-table" style="min-width:560px; font-size:12.5px;">'
       + '<thead><tr>'
-      + [['Company',0],['Engagement',0],['Impr',1],['Clicks',1],['CTR',1]].map(function(h){
-          return '<th'+(h[1]?' class="num"':'')+'>'+h[0]+'</th>';
-        }).join('')
+      // "Level" rather than "Engagement" now that there's a paid-engagement number in the same
+      // table — the bars rank a company against the top company by impressions, which is a
+      // different thing from the engagement count two columns over.
+      + companyTableHead([
+          ['Company',0,''],
+          ['Level',0,'How this company\'s impressions compare with the top company in this list'],
+          ['Paid impr',1,'Impressions from sponsored delivery'],
+          ['Paid clicks',1,'Chargeable clicks on the ads'],
+          ['Paid engmt',1,'Every interaction with the ad — clicks plus reactions, comments, shares and follows'],
+          ['CTR',1,'Paid clicks ÷ paid impressions']
+        ])
       + '</tr></thead><tbody>'+rows+'</tbody></table></div>'
       + (list.length>10 ? '<button class="btn btn-sm toggle-companies-btn" data-campaign="'+cam.id+'" style="margin-top:8px;">'+(state.showAll?'Show top 10':'Show all '+list.length)+'</button>' : '')
+      + audienceBreakdownHtml(cam, state)
       + '</div>';
+  }
+
+  function companyTableHead(cols){
+    return cols.map(function(h){
+      return '<th'+(h[1]?' class="num"':'')+(h[2]?' title="'+esc(h[2])+'"':'')+'>'+h[0]+'</th>';
+    }).join('');
+  }
+
+  // ---- job function / job title breakdown ----
+  //
+  // Sits under the company list because it answers the other half of "who saw this", but it is
+  // deliberately a separate block: LinkedIn serves one demographic pivot per query and won't cross
+  // two, so these are totals for the whole ad set and cannot be attributed to a company. Showing
+  // them inside the company table would imply an attribution that doesn't exist.
+  var BREAKDOWN_PREVIEW = 8;
+
+  function facetTableHtml(cam, title, rows, key, showAll){
+    if(!rows.length){
+      return '<div style="flex:1; min-width:240px;">'
+        + '<div style="font-size:10.5px; color:var(--faint); font-weight:700; text-transform:uppercase; letter-spacing:.04em; margin-bottom:5px;">'+esc(title)+'</div>'
+        + '<div style="font-size:11.5px; color:var(--faint);">Nothing above LinkedIn\'s reporting threshold.</div>'
+        + '</div>';
+    }
+    var shown = showAll ? rows : rows.slice(0, BREAKDOWN_PREVIEW);
+    var body = shown.map(function(r){
+      return '<tr>'
+        + '<td style="font-weight:600;">'+esc(r.name || (title+' '+r.id))+'</td>'
+        + '<td class="num">'+fmtInt(r.impressions)+'</td>'
+        + '<td class="num">'+fmtInt(r.clicks)+'</td>'
+        + '<td class="num">'+fmtInt(r.engagements)+'</td>'
+        + '</tr>';
+    }).join('');
+    return '<div style="flex:1; min-width:240px;">'
+      + '<div style="font-size:10.5px; color:var(--faint); font-weight:700; text-transform:uppercase; letter-spacing:.04em; margin-bottom:5px;">'+esc(title)+'</div>'
+      + '<div class="scroll-x"><table class="data-table" style="min-width:240px; font-size:12.5px;">'
+      + '<thead><tr>'
+      + companyTableHead([[title,0,''],['Paid impr',1,''],['Paid clicks',1,''],['Paid engmt',1,'']])
+      + '</tr></thead><tbody>'+body+'</tbody></table></div>'
+      + (rows.length>BREAKDOWN_PREVIEW
+          ? '<button class="btn btn-sm toggle-facet-btn" data-campaign="'+cam.id+'" data-facet="'+key+'" style="margin-top:6px;">'
+            + (showAll?'Show top '+BREAKDOWN_PREVIEW:'Show all '+rows.length)+'</button>'
+          : '')
+      + '</div>';
+  }
+
+  function audienceBreakdownHtml(cam, state){
+    var functions = (state.data && state.data.jobFunctions) || [];
+    var titles = (state.data && state.data.jobTitles) || [];
+    var err = (state.data && state.data.breakdownError) || '';
+    if(!functions.length && !titles.length && !err) return '';
+    return '<div style="margin-top:14px; padding-top:12px; border-top:1px dashed var(--line-soft);">'
+      + '<div style="font-size:11px; color:var(--faint); line-height:1.5; margin-bottom:9px;">'
+      + 'Job function and job title for this ad set as a whole. '
+      + 'LinkedIn reports one audience dimension at a time, so these <b>can\'t be broken down per company</b> — '
+      + 'they cover the same '+esc(companyWindowLabel(state))+' window as the list above.'
+      + (err
+          ? '<br><span style="color:#E3B341;">Couldn\'t refresh these just now ('+esc(err)+') — showing the last good pull.</span>'
+          : '')
+      + '</div>'
+      + '<div style="display:flex; gap:18px; flex-wrap:wrap;">'
+      + facetTableHtml(cam, 'Job function', functions, 'jobFunctions', state.showAllFunctions)
+      + facetTableHtml(cam, 'Job title', titles, 'jobTitles', state.showAllTitles)
+      + '</div></div>';
   }
 
   function campaignsPanelHtml(c){
@@ -1236,6 +1309,13 @@
       e.stopPropagation();
       var id=Number(el.getAttribute('data-campaign'));
       if(companyPanels[id]) companyPanels[id].showAll = !companyPanels[id].showAll;
+      renderAll();
+    }); });
+    document.querySelectorAll('.toggle-facet-btn').forEach(function(el){ el.addEventListener('click', function(e){
+      e.stopPropagation();
+      var id=Number(el.getAttribute('data-campaign'));
+      var key = el.getAttribute('data-facet')==='jobTitles' ? 'showAllTitles' : 'showAllFunctions';
+      if(companyPanels[id]) companyPanels[id][key] = !companyPanels[id][key];
       renderAll();
     }); });
     document.querySelectorAll('.toggle-all-campaigns').forEach(function(el){ el.addEventListener('click', function(e){ e.stopPropagation(); }); el.addEventListener('change', function(){

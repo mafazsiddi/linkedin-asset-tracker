@@ -13,8 +13,9 @@ single static `index.html`; backend is Vercel Serverless Functions under `api/` 
   the date picker is on are summed on read — there's no separate lifetime counter to keep in sync.
   All spend is in INR. Metrics only exist at campaign granularity (that's what LinkedIn's API
   reports), so assets that share a campaign show identical numbers — that's expected, not a bug.
-- **Company engagement**: which companies saw each ad set (`campaign_company_engagement`), keyed by
-  reporting window rather than by day — see "Which companies saw an ad set" below.
+- **Audience**: who saw each ad set — companies (`campaign_company_engagement`) plus job function
+  and job title (`campaign_audience_breakdown`), both keyed by reporting window rather than by day.
+  See "Who saw an ad set" below.
 
 ## Reporting period
 
@@ -210,10 +211,24 @@ routinely holds several creative IDs for the same artwork inside one ad set — 
 creative appearing 18 times across 7 ad sets, and 18 near-identical lines answer nothing. Where all
 placements sit in one ad set the badge counts placements instead, so it never reads "1 ad sets".
 
-## Which companies saw an ad set
+## Who saw an ad set
 
 Each campaign row has a **Companies** expander mirroring Campaign Manager's Companies report —
-company name, an engagement level relative to the top company, impressions, clicks and CTR.
+company name, a level relative to the top company, **paid impressions**, **paid clicks**, **paid
+engagements** and CTR. Underneath it sit two more breakdowns of the same window: **job function**
+and **job title**.
+
+"Paid" is not a distinct set of numbers on LinkedIn's side, it's a label for what `adAnalytics`
+reports: sponsored delivery only, never organic. Paid engagements is `totalEngagements` — every
+interaction with the ad unit, so clicks *plus* reactions, comments, shares and follows. It's
+therefore always ≥ paid clicks.
+
+**Job function and job title are ad-set-wide, not per company**, and that isn't a shortcut. The
+analytics finder takes a single `pivot`, and the statistics finder — the one that accepts up to
+three `pivots` — has no `MEMBER_*` values in its enum at all. So there is no query that crosses
+company with title: "which job titles at Deloitte saw this ad" is not a question the API can
+answer. Each facet is its own request and its own total, and the panel says so rather than
+implying an attribution that doesn't exist.
 
 This one can't work like the other metrics, for two reasons:
 
@@ -225,16 +240,32 @@ This one can't work like the other metrics, for two reasons:
 - The account reports engagement from ~500k companies. Pulling every campaign's list on a schedule
   would dwarf the rest of the database for data almost nobody opens.
 
-So it's fetched **on demand and cached** (`campaign_company_engagement`), with the top
-`COMPANY_TOP_N` (default 100) companies kept per window and the cache considered fresh for
-`COMPANY_CACHE_TTL_MINUTES` (default 120, matching the sync cadence). `?refresh=1` forces a re-pull.
-If LinkedIn is unreachable and a stale entry exists it's served with a "showing the last good pull"
-marker — a panel saying "as of 4 hours ago" beats one saying nothing.
+So it's fetched **on demand and cached** — companies in `campaign_company_engagement`, the two
+facets in `campaign_audience_breakdown` — with the top `COMPANY_TOP_N` (default 100) values kept per
+window and the cache considered fresh for `COMPANY_CACHE_TTL_MINUTES` (default 120, matching the
+sync cadence). `?refresh=1` forces a re-pull. If LinkedIn is unreachable and a stale entry exists
+it's served with a "showing the last good pull" marker — a panel saying "as of 4 hours ago" beats
+one saying nothing.
 
-Company names aren't on the analytics response (the pivot value is a bare `urn:li:organization:…`),
-and the plain `/rest/organizations` lookup needs an organization-admin scope this app doesn't have.
-Names come from `adTargetingEntities?q=urns`, which the ads scopes do cover. Resolution is
-best-effort: an unresolvable company still appears, labelled by its ID.
+The job function and title pivots are two further requests against an endpoint that throttles on
+metric values returned per 5 minutes, and they answer a softer question than the company list does.
+So they're fetched after the companies, sequentially, and a failure there falls back to the last
+cached breakdown and is reported in the panel rather than costing the caller the companies it
+actually asked for.
+
+Names aren't on the analytics response — every pivot value is a bare URN
+(`urn:li:organization:…`, `urn:li:function:…`, `urn:li:title:…`) — and the obvious per-type
+lookups need scopes this app doesn't have (`/rest/organizations` wants organization-admin). Names
+come from `adTargetingEntities?q=urns`, which the ads scopes do cover and which takes mixed URN
+types in one batch; anything it can't resolve gets a second attempt against the standardised-data
+endpoints LinkedIn documents for that URN type (`/titles`, `/functions`). Resolution is
+best-effort throughout: an unresolvable value still appears, labelled by its ID.
+
+Two LinkedIn behaviours worth knowing before reading these numbers as gospel: demographic values
+with fewer than 3 events are dropped entirely, and the data lags performance metrics by 12–24
+hours. `approximateMemberReach` is deliberately *not* requested here — LinkedIn documents it as
+available on non-demographic pivots only, so it comes back absent on every `MEMBER_*` query and
+`Number(undefined || 0)` would turn that into a confident 0.
 
 ## Asset library
 

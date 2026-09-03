@@ -109,11 +109,35 @@ create table if not exists campaign_company_engagement (
   company_name text,
   impressions integer not null default 0,
   clicks integer not null default 0,
+  -- LinkedIn's totalEngagements: clicks plus reactions, comments, shares and follows.
+  engagements integer not null default 0,
   spend numeric not null default 0,
   reach integer not null default 0,
   leads integer not null default 0,
   fetched_at timestamptz not null default now(),
   unique (campaign_id, range_start, range_end, company_urn)
+);
+
+-- Job function and job title breakdowns for an ad set, cached like the company list above.
+--
+-- Kept apart from campaign_company_engagement rather than folded in as extra columns because
+-- LinkedIn serves only one demographic pivot per query: these are ad-set-wide totals with no way to
+-- attribute them to a company, so "titles at company X" is not a row that can exist.
+create table if not exists campaign_audience_breakdown (
+  id serial primary key,
+  campaign_id integer not null references campaigns(id) on delete cascade,
+  range_start date not null,
+  range_end date not null,
+  dimension text not null check (dimension in ('job_function', 'job_title')),
+  entity_urn text not null,
+  entity_name text,
+  impressions integer not null default 0,
+  clicks integer not null default 0,
+  engagements integer not null default 0,
+  spend numeric not null default 0,
+  leads integer not null default 0,
+  fetched_at timestamptz not null default now(),
+  unique (campaign_id, range_start, range_end, dimension, entity_urn)
 );
 
 create table if not exists notifications (
@@ -162,3 +186,5 @@ create index if not exists campaign_daily_metrics_date_idx on campaign_daily_met
 create index if not exists asset_daily_metrics_date_idx on asset_daily_metrics (metric_date);
 create index if not exists campaign_company_engagement_lookup_idx
   on campaign_company_engagement (campaign_id, range_start, range_end);
+create index if not exists campaign_audience_breakdown_lookup_idx
+  on campaign_audience_breakdown (campaign_id, range_start, range_end);
